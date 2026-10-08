@@ -1,0 +1,27 @@
+# Node.js
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python
+__pycache__/
+*.py[cod]
+backend/venv/
+backend/.venv/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Uploaded student photos and biometric data
+backend/uploads/**
+backend/models/*.onnx
+backend/assets/*.ttf
+backend/data/school-settings.json
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
