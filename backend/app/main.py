@@ -9,7 +9,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import get_settings
 from app.database.database import engine
-
 from app.api import (
     auth,
     attendance,
@@ -22,11 +21,13 @@ from app.api import (
     users,
 )
 
+
 # =========================================================
 # SETTINGS
 # =========================================================
 
 settings = get_settings()
+
 
 # =========================================================
 # FASTAPI APP
@@ -37,6 +38,7 @@ app = FastAPI(
     description="សេវា API សម្រាប់គ្រប់គ្រងសិស្ស និងវត្តមានតាមការស្គាល់មុខ",
     version="0.1.0",
 )
+
 
 # =========================================================
 # CORS CONFIGURATION
@@ -57,32 +59,56 @@ cors_setting = getattr(
 
 if cors_setting:
     if isinstance(cors_setting, str):
+        # គាំទ្រ String ដែលបំបែកដោយសញ្ញាក្បៀស
         extra_origins = [
-            item.strip().rstrip("/")
+            item.strip().strip('"').strip("'").rstrip("/")
             for item in cors_setting.split(",")
             if item.strip()
         ]
+
+        # គាំទ្រ JSON-style string ដូចជា:
+        # ["https://example.vercel.app"]
+        if cors_setting.strip().startswith("["):
+            try:
+                import json
+
+                parsed_origins = json.loads(cors_setting)
+                if isinstance(parsed_origins, list):
+                    extra_origins = [
+                        str(item).strip().rstrip("/")
+                        for item in parsed_origins
+                        if str(item).strip()
+                    ]
+            except (ValueError, TypeError):
+                pass
+
     elif isinstance(cors_setting, (list, tuple)):
         extra_origins = [
             str(item).strip().rstrip("/")
             for item in cors_setting
             if str(item).strip()
         ]
+
     else:
         extra_origins = []
 
     origins.extend(extra_origins)
 
-# ដក URL ស្ទួន និងដក slash ខាងចុង
-origins = list(dict.fromkeys(
-    origin.rstrip("/") for origin in origins
-))
+
+# ដក URL ស្ទួន និង slash ខាងចុង
+origins = list(
+    dict.fromkeys(
+        origin.strip().rstrip("/")
+        for origin in origins
+        if origin.strip()
+    )
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
 
-    # អនុញ្ញាត localhost និង Vercel preview/production domains
+    # អនុញ្ញាត localhost និង Vercel domains
     allow_origin_regex=(
         r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
         r"|https://[a-zA-Z0-9-]+\.vercel\.app"
@@ -92,6 +118,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # =========================================================
 # ROOT ROUTE
@@ -106,6 +133,7 @@ def read_root():
         "health": "/health",
         "ready": "/ready",
     }
+
 
 # =========================================================
 # API ROUTES
@@ -124,6 +152,7 @@ for api_router in (
 ):
     app.include_router(api_router)
 
+
 # =========================================================
 # HEALTH CHECK
 # =========================================================
@@ -134,6 +163,7 @@ def health_check():
         "status": "ok",
         "message": "API is running",
     }
+
 
 # =========================================================
 # READINESS CHECK
