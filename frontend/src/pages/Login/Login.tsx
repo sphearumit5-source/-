@@ -33,34 +33,36 @@ export default function Login() {
 
   return (
     <main className="grid min-h-screen bg-[#f4f7f6] lg:grid-cols-[1.1fr_0.9fr]">
-      <section className="relative hidden overflow-hidden bg-[#174ea6] p-12 text-white lg:flex lg:flex-col lg:justify-between">
+      <section className="relative hidden overflow-hidden bg-gradient-to-br from-[#1a5cc0] via-[#174ea6] to-[#0f3573] p-12 text-white lg:flex lg:flex-col lg:justify-between">
         <div className="absolute inset-0 opacity-20" aria-hidden="true" style={{ backgroundImage: 'radial-gradient(#dbeafe 1px, transparent 1px)', backgroundSize: '24px 24px' }} />
-        <div className="relative flex items-center gap-3"><span className="grid size-12 place-items-center rounded-xl bg-white/15"><GraduationCap size={25} /></span><span className="font-semibold">ប្រព័ន្ធគ្រប់គ្រងសាលារៀន</span></div>
-        <div className="relative max-w-2xl pb-12">
+        <div className="animate-blob absolute -left-16 top-10 size-72 rounded-full bg-sky-400/30 blur-3xl" aria-hidden="true" />
+        <div className="animate-floaty absolute -right-10 bottom-0 size-80 rounded-full bg-indigo-400/25 blur-3xl" aria-hidden="true" />
+        <div className="relative flex animate-fade-down items-center gap-3"><span className="grid size-12 place-items-center rounded-xl bg-white/15 ring-1 ring-white/25 backdrop-blur"><GraduationCap size={25} /></span><span className="font-semibold">ប្រព័ន្ធគ្រប់គ្រងសាលារៀន</span></div>
+        <div className="stagger relative max-w-2xl pb-12">
           <p className="mb-4 text-sm font-semibold text-blue-100">សម្រាប់ការគ្រប់គ្រងសិក្សាប្រចាំថ្ងៃ</p>
           <h1 className="text-4xl font-bold leading-relaxed">គ្រប់គ្រងសិស្ស<br />និងវត្តមានដោយភាពងាយស្រួល</h1>
           <p className="mt-5 max-w-lg text-base leading-8 text-blue-50/85">ប្រព័ន្ធកត់ត្រាវត្តមានតាមការស្គាល់មុខ និងគ្រប់គ្រងព័ត៌មានសាលារៀននៅកន្លែងតែមួយ។</p>
         </div>
-        <p className="relative text-xs text-blue-100/80">សុវត្ថិភាពទិន្នន័យសិស្សគឺជាអាទិភាព</p>
+        <p className="relative animate-fade-in text-xs text-blue-100/80">សុវត្ថិភាពទិន្នន័យសិស្សគឺជាអាទិភាព</p>
       </section>
       <section className="flex items-center justify-center px-5 py-12">
-        <div className="w-full max-w-md">
-          <div className="mb-9 flex items-center gap-3 lg:hidden"><span className="grid size-11 place-items-center rounded-xl bg-blue-700 text-white"><GraduationCap /></span><span className="font-semibold text-slate-800">ប្រព័ន្ធគ្រប់គ្រងសាលារៀន</span></div>
+        <div className="w-full max-w-md animate-fade-up">
+          <div className="mb-9 flex items-center gap-3 lg:hidden"><span className="grid size-11 place-items-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-md shadow-blue-700/25"><GraduationCap /></span><span className="font-semibold text-slate-800">ប្រព័ន្ធគ្រប់គ្រងសាលារៀន</span></div>
           <p className="text-sm font-semibold text-blue-800">សូមស្វាគមន៍</p>
-          <h2 className="mt-2 text-3xl font-bold text-slate-900">ចូលប្រព័ន្ធ</h2>
+          <h2 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">ចូលប្រព័ន្ធ</h2>
           <p className="mt-2 text-sm text-slate-600">បញ្ចូលព័ត៌មានគណនីរបស់អ្នកដើម្បីបន្ត។</p>
           <form className="mt-8 space-y-5" onSubmit={submit}>
             <Input label="ឈ្មោះអ្នកប្រើប្រាស់" name="username" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} placeholder="បញ្ចូលឈ្មោះអ្នកប្រើប្រាស់" />
             <label className="block space-y-1.5 text-sm font-medium text-slate-700">
               <span>ពាក្យសម្ងាត់</span>
               <span className="relative block">
-                <LockKeyhole className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17} aria-hidden="true" />
-                <input name="password" autoComplete="current-password" required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="បញ្ចូលពាក្យសម្ងាត់" className="min-h-11 w-full rounded-lg border border-slate-300 bg-white py-2 pl-10 pr-12 text-slate-900 outline-none focus:border-blue-700 focus:ring-2 focus:ring-blue-700/15" />
-                <button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'លាក់ពាក្យសម្ងាត់' : 'បង្ហាញពាក្យសម្ងាត់'} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-2 text-slate-500 hover:bg-slate-100">{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+                <LockKeyhole className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors group-focus-within:text-blue-600" size={17} aria-hidden="true" />
+                <input name="password" autoComplete="current-password" required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="បញ្ចូលពាក្យសម្ងាត់" className="min-h-11 w-full rounded-lg border border-slate-300 bg-white py-2 pl-10 pr-12 text-slate-900 outline-none transition focus:border-blue-700 focus:ring-2 focus:ring-blue-700/15" />
+                <button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'លាក់ពាក្យសម្ងាត់' : 'បង្ហាញពាក្យសម្ងាត់'} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-2 text-slate-500 transition hover:scale-110 hover:bg-slate-100 active:scale-95">{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button>
               </span>
             </label>
-            {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</p>}
-            <Button type="submit" className="w-full" disabled={loading} icon={<UserRound size={17} />}>{loading ? 'កំពុងចូល…' : 'ចូលប្រព័ន្ធ'}</Button>
+            {error && <p role="alert" className="animate-fade-up rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">{error}</p>}
+            <Button type="submit" className="w-full" disabled={loading} icon={loading ? <span className="size-4 animate-spin-slow rounded-full border-2 border-white/40 border-t-white" /> : <UserRound size={17} />}>{loading ? 'កំពុងចូល…' : 'ចូលប្រព័ន្ធ'}</Button>
           </form>
           <p className="mt-8 text-center text-xs text-slate-500">បើមានបញ្ហាចូលប្រព័ន្ធ សូមទាក់ទងអ្នកគ្រប់គ្រង។</p>
         </div>
