@@ -1,14 +1,16 @@
 
-import re
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+import json
+import logging
+
 from app.core.config import get_settings
 from app.database.database import engine
+
 from app.api import (
     auth,
     attendance,
@@ -21,13 +23,17 @@ from app.api import (
     users,
 )
 
+# =========================================================
+# LOGGING
+# =========================================================
+
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
 settings = get_settings()
-
 
 # =========================================================
 # FASTAPI APP
@@ -39,7 +45,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-
 # =========================================================
 # CORS CONFIGURATION
 # =========================================================
@@ -50,65 +55,65 @@ origins = [
     "https://frontend-eight-liart-33.vercel.app",
 ]
 
-# ទទួល CORS origins ពី Environment Variables
+
+def normalize_origins(value):
+    """ទទួល CORS origins ពី Environment Variables។"""
+
+    if not value:
+        return []
+
+    if isinstance(value, str):
+        value = value.strip()
+
+        if not value:
+            return []
+
+        # គាំទ្រ JSON list:
+        # ["https://example.vercel.app"]
+        if value.startswith("["):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    value = parsed
+                else:
+                    return []
+            except (ValueError, TypeError):
+                logger.warning("CORS_ORIGINS JSON format is invalid")
+                return []
+        else:
+            # គាំទ្រ comma-separated domains
+            value = value.split(",")
+
+    if not isinstance(value, (list, tuple)):
+        return []
+
+    result = []
+
+    for item in value:
+        origin = str(item).strip().strip('"').strip("'").rstrip("/")
+
+        if origin:
+            result.append(origin)
+
+    return result
+
+
 cors_setting = getattr(
     settings,
     "CORS_ORIGINS",
     getattr(settings, "cors_origins", None),
 )
 
-if cors_setting:
-    if isinstance(cors_setting, str):
-        # គាំទ្រ String ដែលបំបែកដោយសញ្ញាក្បៀស
-        extra_origins = [
-            item.strip().strip('"').strip("'").rstrip("/")
-            for item in cors_setting.split(",")
-            if item.strip()
-        ]
+origins.extend(normalize_origins(cors_setting))
 
-        # គាំទ្រ JSON-style string ដូចជា:
-        # ["https://example.vercel.app"]
-        if cors_setting.strip().startswith("["):
-            try:
-                import json
-
-                parsed_origins = json.loads(cors_setting)
-                if isinstance(parsed_origins, list):
-                    extra_origins = [
-                        str(item).strip().rstrip("/")
-                        for item in parsed_origins
-                        if str(item).strip()
-                    ]
-            except (ValueError, TypeError):
-                pass
-
-    elif isinstance(cors_setting, (list, tuple)):
-        extra_origins = [
-            str(item).strip().rstrip("/")
-            for item in cors_setting
-            if str(item).strip()
-        ]
-
-    else:
-        extra_origins = []
-
-    origins.extend(extra_origins)
-
-
-# ដក URL ស្ទួន និង slash ខាងចុង
-origins = list(
-    dict.fromkeys(
-        origin.strip().rstrip("/")
-        for origin in origins
-        if origin.strip()
-    )
-)
+# ដក origins ស្ទួន
+origins = list(dict.fromkeys(origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
 
-    # អនុញ្ញាត localhost និង Vercel domains
+    # អនុញ្ញាត localhost និង Vercel deployment domains
     allow_origin_regex=(
         r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
         r"|https://[a-zA-Z0-9-]+\.vercel\.app"
@@ -118,7 +123,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # =========================================================
 # ROOT ROUTE
@@ -176,6 +180,19 @@ def readiness_check():
             connection.execute(text("SELECT 1"))
 
     except SQLAlchemyError:
+        logger.exception("Database readiness check failed")
+
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "database": "unavailable",
+            },
+        )
+
+    except Exception:
+        logger.exception("Unexpected readiness check error")
+
         return JSONResponse(
             status_code=503,
             content={
