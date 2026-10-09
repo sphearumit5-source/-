@@ -14,19 +14,11 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# =========================================================
-# CUSTOM ERROR
-# =========================================================
-
 class FaceProcessingError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
 
-
-# =========================================================
-# DATA CLASSES
-# =========================================================
 
 @dataclass(frozen=True)
 class FaceMatch:
@@ -42,32 +34,69 @@ class FaceAnalysis:
     guidance: str
 
 
-# =========================================================
-# FACE SERVICE
-# =========================================================
-
 class FaceService:
+    DETECTOR_FILENAME = "face_detection_yunet_2023mar.onnx"
+    RECOGNIZER_FILENAME = "face_recognition_sface_2021dec.onnx"
 
     def __init__(self, models_directory: Path | None = None):
         try:
             import cv2
         except ImportError as error:
-            logger.exception("OpenCV is not installed")
+            logger.exception("OpenCV import failed")
             raise FaceProcessingError(
                 "models_unavailable",
-                "OpenCV មិនទាន់បានដំឡើងនៅលើ Backend ទេ។",
+                "OpenCV មិនទាន់បានដំឡើងទេ។",
             ) from error
 
         self.cv2 = cv2
 
-        directory = (
+        if not hasattr(cv2, "FaceDetectorYN"):
+            logger.error(
+                "OpenCV FaceDetectorYN is unavailable; version=%s",
+                getattr(cv2, "__version__", "unknown"),
+            )
+            raise FaceProcessingError(
+                "models_unavailable",
+                "OpenCV មិនមាន FaceDetectorYN ទេ។",
+            )
+
+        if not hasattr(cv2, "FaceRecognizerSF"):
+            logger.error(
+                "OpenCV FaceRecognizerSF is unavailable; version=%s",
+                getattr(cv2, "__version__", "unknown"),
+            )
+            raise FaceProcessingError(
+                "models_unavailable",
+                "OpenCV មិនមាន FaceRecognizerSF ទេ។",
+            )
+
+        project_root = Path(__file__).resolve().parents[2]
+
+        configured_directory = (
             Path(models_directory)
             if models_directory is not None
             else Path(get_settings().face_models_directory)
         )
 
-        detector_path = directory / "face_detection_yunet_2023mar.onnx"
-        recognizer_path = directory / "face_recognition_sface_2021dec.onnx"
+        if configured_directory.is_absolute():
+            directory = configured_directory
+        else:
+            directory = project_root / configured_directory
+
+        directory = directory.resolve()
+
+        detector_path = directory / self.DETECTOR_FILENAME
+        recognizer_path = directory / self.RECOGNIZER_FILENAME
+
+        logger.info("Face models directory: %s", directory)
+        logger.info(
+            "Face detector model exists: %s",
+            detector_path.is_file(),
+        )
+        logger.info(
+            "Face recognizer model exists: %s",
+            recognizer_path.is_file(),
+        )
 
         missing = [
             path.name
@@ -77,18 +106,13 @@ class FaceService:
 
         if missing:
             logger.error(
-                "Face model files missing in %s: %s",
+                "Face model files missing: directory=%s files=%s",
                 directory,
                 ", ".join(missing),
             )
-
             raise FaceProcessingError(
                 "models_unavailable",
-                (
-                    "មិនទាន់មាន Face Model៖ "
-                    + ", ".join(missing)
-                    + "។ សូមពិនិត្យទីតាំងឯកសារ Model ក្នុង Deployment។"
-                ),
+                "មិនមានឯកសារ Face Models៖ " + ", ".join(missing),
             )
 
         try:
@@ -106,30 +130,27 @@ class FaceService:
                 "",
             )
 
-        except Exception as error:
-            logger.exception("Failed to initialize face models")
+            if self.detector is None or self.recognizer is None:
+                raise RuntimeError(
+                    "OpenCV returned an empty face model."
+                )
 
+        except Exception as error:
+            logger.exception("Failed to initialize YuNet/SFace models")
             raise FaceProcessingError(
                 "models_unavailable",
-                "មិនអាចបើក Face Model បានទេ។",
+                "មិនអាចបើក Face Models បានទេ។",
             ) from error
 
-        if self.detector is None or self.recognizer is None:
-            raise FaceProcessingError(
-                "models_unavailable",
-                "Face Model មិនអាចដំណើរការបានទេ។",
-            )
-
-        # Detector និង recognizer ត្រូវប្រើ Lock ដើម្បីជៀសវាង
-        # ការប៉ះទង្គិចពេលមានសំណើច្រើនក្នុងពេលតែមួយ។
         self._inference_lock = Lock()
 
-    # =====================================================
-    # DECODE IMAGE
-    # =====================================================
+        logger.info("FaceService initialized successfully")
+
+    # -----------------------------------------------------
+    # IMAGE DECODING
+    # -----------------------------------------------------
 
     def _decode_image(self, image_data: bytes) -> np.ndarray:
-
         max_bytes = get_settings().max_upload_bytes
 
         if not image_data or len(image_data) > max_bytes:
@@ -146,7 +167,6 @@ class FaceService:
             )
         except Exception as error:
             logger.exception("Image decoding failed")
-
             raise FaceProcessingError(
                 "invalid_image",
                 "មិនអាចអានរូបភាពនេះបានទេ។",
@@ -155,7 +175,7 @@ class FaceService:
         if image is None or image.ndim != 3:
             raise FaceProcessingError(
                 "invalid_image",
-                "ឯកសារនេះមិនមែនជារូបភាពដែលអាចអានបានទេ។",
+                "ឯកសារនេះមិនមែនជារូបភាពត្រឹមត្រូវទេ។",
             )
 
         height, width = image.shape[:2]
@@ -163,20 +183,16 @@ class FaceService:
         if width < 160 or height < 160:
             raise FaceProcessingError(
                 "image_too_small",
-                "រូបភាពតូចពេក សូមថតម្ដងទៀត។",
+                "រូបភាពតូចពេក។",
             )
 
         return image
 
-    # =====================================================
-    # DETECT FACES
-    # =====================================================
+    # -----------------------------------------------------
+    # FACE DETECTION
+    # -----------------------------------------------------
 
-    def _detect_faces(
-        self,
-        image: np.ndarray,
-    ) -> np.ndarray | None:
-
+    def _detect_faces(self, image: np.ndarray) -> np.ndarray | None:
         height, width = image.shape[:2]
 
         try:
@@ -187,19 +203,17 @@ class FaceService:
             return faces
 
         except Exception as error:
-            logger.exception("Face detection inference failed")
-
+            logger.exception("YuNet face detection failed")
             raise FaceProcessingError(
                 "models_unavailable",
                 "Face Detection Model មានបញ្ហាពេលដំណើរការ។",
             ) from error
 
-    # =====================================================
-    # EXTRACT FACE EMBEDDING
-    # =====================================================
+    # -----------------------------------------------------
+    # EMBEDDING EXTRACTION
+    # -----------------------------------------------------
 
     def extract_embedding(self, image_data: bytes) -> np.ndarray:
-
         image = self._decode_image(image_data)
         faces = self._detect_faces(image)
 
@@ -216,14 +230,14 @@ class FaceService:
             )
 
         face = faces[0]
-
-        _, _, face_width, face_height = face[:4]
+        face_width = float(face[2])
+        face_height = float(face[3])
         score = float(face[14])
 
         if min(face_width, face_height) < 80 or score < 0.8:
             raise FaceProcessingError(
                 "low_quality",
-                "មុខមិនច្បាស់គ្រប់គ្រាន់ សូមថតម្ដងទៀត។",
+                "មុខមិនច្បាស់គ្រប់គ្រាន់។",
             )
 
         try:
@@ -232,7 +246,6 @@ class FaceService:
                     image,
                     face.reshape(1, -1),
                 )
-
                 feature = self.recognizer.feature(aligned)
 
             feature = np.asarray(
@@ -241,8 +254,7 @@ class FaceService:
             ).reshape(-1)
 
         except Exception as error:
-            logger.exception("Face embedding extraction failed")
-
+            logger.exception("SFace embedding extraction failed")
             raise FaceProcessingError(
                 "models_unavailable",
                 "មិនអាចបង្កើតទិន្នន័យមុខបានទេ។",
@@ -253,7 +265,7 @@ class FaceService:
         if not np.isfinite(norm) or norm == 0:
             raise FaceProcessingError(
                 "low_quality",
-                "មិនអាចបង្កើតទិន្នន័យមុខបានទេ។",
+                "ទិន្នន័យមុខមិនត្រឹមត្រូវ។",
             )
 
         normalized = feature / norm
@@ -264,18 +276,13 @@ class FaceService:
                 "ទិន្នន័យមុខមិនត្រឹមត្រូវ។",
             )
 
-        return normalized
+        return normalized.astype(np.float32)
 
-    # =====================================================
-    # ANALYZE CAMERA FRAME
-    # =====================================================
+    # -----------------------------------------------------
+    # CAMERA FRAME ANALYSIS
+    # -----------------------------------------------------
 
     def analyze(self, image_data: bytes) -> FaceAnalysis:
-        """
-        វិភាគរូបភាពសម្រាប់ Auto Scan។
-        មិនកត់ត្រាវត្តមាន និងមិនប្រើ Database។
-        """
-
         image = self._decode_image(image_data)
         faces = self._detect_faces(image)
 
@@ -298,11 +305,14 @@ class FaceService:
         height, width = image.shape[:2]
         face = faces[0]
 
-        x, y, face_width, face_height = face[:4]
+        x = float(face[0])
+        y = float(face[1])
+        face_width = float(face[2])
+        face_height = float(face[3])
         score = float(face[14])
 
-        center_x = float(x + face_width / 2)
-        center_y = float(y + face_height / 2)
+        center_x = x + face_width / 2
+        center_y = y + face_height / 2
 
         centered = (
             0.38 * width <= center_x <= 0.62 * width
@@ -345,25 +355,17 @@ class FaceService:
             guidance="ល្អណាស់! កំពុងចាប់យកមុខ…",
         )
 
-    # =====================================================
+    # -----------------------------------------------------
     # COSINE SIMILARITY
-    # =====================================================
+    # -----------------------------------------------------
 
     @staticmethod
     def cosine_similarity(
         first: np.ndarray,
         second: np.ndarray,
     ) -> float:
-
-        left = np.asarray(
-            first,
-            dtype=np.float32,
-        ).reshape(-1)
-
-        right = np.asarray(
-            second,
-            dtype=np.float32,
-        ).reshape(-1)
+        left = np.asarray(first, dtype=np.float32).reshape(-1)
+        right = np.asarray(second, dtype=np.float32).reshape(-1)
 
         if left.shape != right.shape or left.size == 0:
             return -1.0
@@ -385,16 +387,15 @@ class FaceService:
 
         return max(-1.0, min(1.0, similarity))
 
-    # =====================================================
-    # FIND MATCHING STUDENT
-    # =====================================================
+    # -----------------------------------------------------
+    # MATCH STUDENT
+    # -----------------------------------------------------
 
     def find_match(
         self,
         embedding: np.ndarray,
         known_embeddings: list[tuple[int, list[float]]],
     ) -> FaceMatch | None:
-
         settings = get_settings()
 
         threshold = settings.face_similarity_threshold
@@ -403,39 +404,42 @@ class FaceService:
         best_by_student: dict[int, FaceMatch] = {}
 
         for student_id, stored_embedding in known_embeddings:
-
             similarity = self.cosine_similarity(
                 embedding,
                 np.asarray(stored_embedding, dtype=np.float32),
             )
 
-            current = best_by_student.get(student_id)
+            current = best_by_student.get(int(student_id))
 
             if current is None or similarity > current.similarity:
-                best_by_student[student_id] = FaceMatch(
+                best_by_student[int(student_id)] = FaceMatch(
                     student_id=int(student_id),
                     similarity=similarity,
                 )
 
         matches = sorted(
             best_by_student.values(),
-            key=lambda match: match.similarity,
+            key=lambda item: item.similarity,
             reverse=True,
         )
 
-        best = matches[0] if matches else None
+        if not matches:
+            return None
 
-        if best is None or best.similarity < threshold:
+        best = matches[0]
+
+        if best.similarity < threshold:
             return None
 
         if (
             len(matches) > 1
             and matches[1].similarity >= threshold
-            and best.similarity - matches[1].similarity < ambiguity_margin
+            and best.similarity - matches[1].similarity
+            < ambiguity_margin
         ):
             raise FaceProcessingError(
                 "ambiguous_match",
-                "លទ្ធផលមុខមិនច្បាស់លាស់ សូមស្កេនម្ដងទៀត។",
+                "លទ្ធផលមុខមិនច្បាស់លាស់។",
             )
 
         return best

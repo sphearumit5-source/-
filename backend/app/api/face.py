@@ -5,9 +5,9 @@ from decimal import Decimal
 from functools import lru_cache
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.dependencies import (
@@ -26,10 +26,6 @@ from app.services.attendance_service import (
 from app.services.face_service import FaceProcessingError, FaceService
 
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -40,13 +36,9 @@ router = APIRouter(
 
 @lru_cache(maxsize=1)
 def get_face_service() -> FaceService:
-    """បង្កើត FaceService តែមួយសម្រាប់ប្រើឡើងវិញ។"""
+    """បង្កើត FaceService មួយ ហើយប្រើឡើងវិញ។"""
     return FaceService()
 
-
-# =========================================================
-# READ AND VALIDATE IMAGE
-# =========================================================
 
 async def _read_image(image: UploadFile) -> bytes:
     allowed_types = {
@@ -62,7 +54,6 @@ async def _read_image(image: UploadFile) -> bytes:
         )
 
     max_bytes = get_settings().max_upload_bytes
-
     data = await image.read(max_bytes + 1)
 
     if not data:
@@ -80,10 +71,6 @@ async def _read_image(image: UploadFile) -> bytes:
     return data
 
 
-# =========================================================
-# FACE PROCESSING ERROR HANDLER
-# =========================================================
-
 def _process_error(error: FaceProcessingError) -> HTTPException:
     errors = {
         "no_face": (
@@ -96,11 +83,11 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
         ),
         "low_quality": (
             422,
-            "មុខមិនច្បាស់ សូមថតម្ដងទៀត។",
+            "មុខមិនច្បាស់។ សូមថតម្ដងទៀត។",
         ),
         "image_too_small": (
             422,
-            "រូបភាពតូចពេក សូមថតម្ដងទៀត។",
+            "រូបភាពតូចពេក។ សូមថតម្ដងទៀត។",
         ),
         "invalid_image": (
             415,
@@ -108,11 +95,11 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
         ),
         "models_unavailable": (
             503,
-            "Face Detection Model មិនទាន់អាចប្រើបាន។",
+            "ប្រព័ន្ធ Face Detection មិនទាន់អាចប្រើបាន។ សូមពិនិត្យ Model និង OpenCV។",
         ),
         "ambiguous_match": (
             409,
-            "រកឃើញលទ្ធផលស្រដៀងគ្នាច្រើន។",
+            "លទ្ធផលស្រដៀងគ្នាច្រើន។ សូមស្កេនម្ដងទៀត។",
         ),
     }
 
@@ -121,9 +108,8 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
         (422, "មិនអាចដំណើរការការស្គាល់មុខបានទេ។"),
     )
 
-    # កត់ត្រាកំហុសក្នុង Vercel Logs ដើម្បីជួយស្វែងរកមូលហេតុ។
     logger.warning(
-        "Face processing failed; code=%s",
+        "Face processing failed: code=%s",
         error.code,
     )
 
@@ -133,30 +119,35 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
     )
 
 
-async def _run_face_operation(
-    operation_name: str,
-    image_data: bytes,
-):
-    """ដំណើរការ FaceService និងគ្រប់គ្រងកំហុស។"""
-
+async def _run_face_operation(operation_name: str, *args):
+    """ដំណើរការ FaceService ដោយគាំទ្រអាគុយម៉ង់ច្រើន។"""
     try:
         service = get_face_service()
-        operation = getattr(service, operation_name)
+        operation = getattr(service, operation_name, None)
 
-        return await run_in_threadpool(
-            operation,
-            image_data,
-        )
+        if operation is None or not callable(operation):
+            logger.error(
+                "FaceService operation does not exist: %s",
+                operation_name,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="មុខងារ Face Service មិនមានទេ។",
+            )
+
+        return await run_in_threadpool(operation, *args)
 
     except FaceProcessingError as error:
         raise _process_error(error) from error
+
+    except HTTPException:
+        raise
 
     except Exception as error:
         logger.exception(
             "Unexpected face service error in %s",
             operation_name,
         )
-
         raise HTTPException(
             status_code=503,
             detail=(
@@ -165,10 +156,6 @@ async def _run_face_operation(
             ),
         ) from error
 
-
-# =========================================================
-# REGISTER STUDENT FACE
-# =========================================================
 
 @router.post("/register")
 async def register_face(
@@ -200,17 +187,14 @@ async def register_face(
                 encoding_data=embedding.tolist(),
             )
         )
-
         database.commit()
 
     except Exception as error:
         database.rollback()
-
         logger.exception(
             "Failed to save face encoding for student_id=%s",
             student_id,
         )
-
         raise HTTPException(
             status_code=500,
             detail="មិនអាចរក្សាទុកទិន្នន័យមុខបានទេ។",
@@ -222,19 +206,12 @@ async def register_face(
     }
 
 
-# =========================================================
-# DETECT FACE FOR CAMERA AUTO-SCAN
-# =========================================================
-
 @router.post("/detect")
 async def detect_face(
     _: CurrentUser,
     image: UploadFile = File(...),
 ) -> dict[str, object]:
-    """
-    ពិនិត្យមុខសម្រាប់ការណែនាំពេលថតរូប។
-    មិនរក្សាទុកវត្តមាន ឬទិន្នន័យក្នុង Database ទេ។
-    """
+    """ពិនិត្យមុខសម្រាប់ Auto Scan ដោយមិនកត់ត្រាវត្តមាន។"""
 
     image_data = await _read_image(image)
 
@@ -250,10 +227,6 @@ async def detect_face(
         "guidance": analysis.guidance,
     }
 
-
-# =========================================================
-# RECOGNIZE FACE AND RECORD ATTENDANCE
-# =========================================================
 
 @router.post("/recognize")
 async def recognize_face(
@@ -338,9 +311,7 @@ async def recognize_face(
         "message": "បានកត់ត្រាវត្តមាន។",
         "student_id": student.id,
         "student_code": student.student_code,
-        "student_name": (
-            f"{student.last_name} {student.first_name}"
-        ),
+        "student_name": f"{student.last_name} {student.first_name}",
         "class_name": (
             student.classroom.class_name
             if student.classroom is not None
