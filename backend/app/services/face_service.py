@@ -1,7 +1,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,11 @@ from app.core.config import get_settings
 class FaceProcessingError(Exception):
     """Error raised while processing a face."""
 
-    def __init__(self, message: str, code: str = "processing_error"):
+    def __init__(
+        self,
+        message: str,
+        code: str = "processing_error",
+    ):
         super().__init__(message)
         self.code = code
 
@@ -77,12 +83,20 @@ class FaceService:
         detector_path = directory / self.DETECTOR_FILENAME
         recognizer_path = directory / self.RECOGNIZER_FILENAME
 
+        # Optional Windows-only local fallback.
         if os.name == "nt":
             fallback = self.WINDOWS_FALLBACK_DIRECTORY
-            fallback_detector = fallback / self.FALLBACK_DETECTOR_FILENAME
-            fallback_recognizer = fallback / self.FALLBACK_RECOGNIZER_FILENAME
+            fallback_detector = (
+                fallback / self.FALLBACK_DETECTOR_FILENAME
+            )
+            fallback_recognizer = (
+                fallback / self.FALLBACK_RECOGNIZER_FILENAME
+            )
 
-            if fallback_detector.is_file() and fallback_recognizer.is_file():
+            if (
+                fallback_detector.is_file()
+                and fallback_recognizer.is_file()
+            ):
                 detector_path = fallback_detector
                 recognizer_path = fallback_recognizer
 
@@ -105,10 +119,12 @@ class FaceService:
                 0.3,
                 5000,
             )
+
             self.recognizer = cv2.FaceRecognizerSF.create(
                 str(recognizer_path),
                 "",
             )
+
         except cv2.error as exc:
             raise RuntimeError(
                 f"Could not load face models: {exc}"
@@ -121,6 +137,19 @@ class FaceService:
             getattr(settings, "face_ambiguity_margin", 0.03)
         )
 
+        if not -1.0 <= self.similarity_threshold <= 1.0:
+            raise ValueError(
+                "face_similarity_threshold must be between -1 and 1."
+            )
+
+        if not 0.0 <= self.ambiguity_margin <= 2.0:
+            raise ValueError(
+                "face_ambiguity_margin must be between 0 and 2."
+            )
+
+        # Protect shared OpenCV model objects from concurrent access.
+        self._model_lock = threading.Lock()
+
     @staticmethod
     def _decode_image(image_bytes: bytes) -> np.ndarray:
         if not image_bytes:
@@ -129,8 +158,15 @@ class FaceService:
                 "invalid_image",
             )
 
-        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
-        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        image_array = np.frombuffer(
+            image_bytes,
+            dtype=np.uint8,
+        )
+
+        image = cv2.imdecode(
+            image_array,
+            cv2.IMREAD_COLOR,
+        )
 
         if image is None or image.size == 0:
             raise FaceProcessingError(
@@ -138,45 +174,70 @@ class FaceService:
                 "invalid_image",
             )
 
-        return image
-
-    def _detect_faces(self, image: np.ndarray) -> list[np.ndarray]:
-        if image is None or image.size == 0:
+        if image.shape[0] < 32 or image.shape[1] < 32:
             raise FaceProcessingError(
-                "Image is empty.",
-                "invalid_image",
+                "Image is too small.",
+                "image_too_small",
             )
 
-        if image.ndim != 3 or image.shape[2] != 3:
+        return image
+
+    def _detect_faces(
+        self,
+        image: np.ndarray,
+    ) -> list[np.ndarray]:
+        if (
+            not isinstance(image, np.ndarray)
+            or image.size == 0
+            or image.ndim != 3
+            or image.shape[2] != 3
+        ):
             raise FaceProcessingError(
                 "Expected a three-channel BGR image.",
                 "invalid_image",
             )
 
         height, width = image.shape[:2]
-        self.detector.setInputSize((width, height))
 
         try:
-            _, detected_faces = self.detector.detect(image)
+            with self._model_lock:
+                self.detector.setInputSize((width, height))
+                _, detected_faces = self.detector.detect(image)
+
         except cv2.error as exc:
             raise FaceProcessingError(
-                f"Face detection failed: {exc}"
+                f"Face detection failed: {exc}",
+                "processing_error",
             ) from exc
 
         if detected_faces is None:
             return []
 
-        return [
-            np.asarray(face, dtype=np.float32)
-            for face in detected_faces
-        ]
+        # Ignore malformed detector output.
+        valid_faces: list[np.ndarray] = []
+
+        for face in detected_faces:
+            face = np.asarray(face, dtype=np.float32).reshape(-1)
+
+            if face.size < 15 or not np.all(np.isfinite(face)):
+                continue
+
+            x, y, box_width, box_height = face[:4]
+
+            if box_width <= 0 or box_height <= 0:
+                continue
+
+            valid_faces.append(face)
+
+        return valid_faces
 
     def extract_embedding(
         self,
         image: bytes | np.ndarray,
         face: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Accept either uploaded image bytes or a BGR image array."""
+        """Extract a normalized SFace embedding from one face."""
+
         if isinstance(image, bytes):
             image = self._decode_image(image)
 
@@ -204,11 +265,17 @@ class FaceService:
             face = detected_faces[0]
 
         try:
-            aligned_face = self.recognizer.alignCrop(image, face)
-            embedding = self.recognizer.feature(aligned_face)
+            with self._model_lock:
+                aligned_face = self.recognizer.alignCrop(
+                    image,
+                    face,
+                )
+                embedding = self.recognizer.feature(aligned_face)
+
         except cv2.error as exc:
             raise FaceProcessingError(
-                f"Face feature extraction failed: {exc}"
+                f"Face feature extraction failed: {exc}",
+                "low_quality",
             ) from exc
 
         if embedding is None or embedding.size == 0:
@@ -224,7 +291,11 @@ class FaceService:
 
         norm = float(np.linalg.norm(embedding))
 
-        if not np.isfinite(norm) or norm <= 0:
+        if (
+            not np.all(np.isfinite(embedding))
+            or not np.isfinite(norm)
+            or norm <= 0
+        ):
             raise FaceProcessingError(
                 "Invalid face embedding.",
                 "low_quality",
@@ -233,7 +304,8 @@ class FaceService:
         return embedding / norm
 
     def analyze(self, image_bytes: bytes) -> FaceAnalysis:
-        """Detect faces and return status for the frontend scanner."""
+        """Detect faces and return camera guidance."""
+
         image = self._decode_image(image_bytes)
         detected_faces = self._detect_faces(image)
 
@@ -242,7 +314,8 @@ class FaceService:
 
         for face in detected_faces:
             x, y, box_width, box_height = (
-                int(round(value)) for value in face[:4]
+                int(round(value))
+                for value in face[:4]
             )
 
             results.append(
@@ -253,9 +326,7 @@ class FaceService:
                         "width": box_width,
                         "height": box_height,
                     },
-                    "confidence": (
-                        float(face[14]) if len(face) > 14 else 0.0
-                    ),
+                    "confidence": float(face[14]),
                 }
             )
 
@@ -264,10 +335,16 @@ class FaceService:
         ready = False
 
         if face_count == 0:
-            guidance = "មិនរកឃើញមុខទេ។ សូមដាក់មុខនៅមុខកាមេរ៉ា។"
+            guidance = (
+                "មិនរកឃើញមុខទេ។ "
+                "សូមដាក់មុខនៅមុខកាមេរ៉ា។"
+            )
 
         elif face_count > 1:
-            guidance = "រកឃើញមុខច្រើន។ សូមឱ្យមានមនុស្សម្នាក់ប៉ុណ្ណោះ។"
+            guidance = (
+                "រកឃើញមុខច្រើន។ "
+                "សូមឱ្យមានមនុស្សម្នាក់ប៉ុណ្ណោះ។"
+            )
 
         else:
             bbox = results[0]["bbox"]
@@ -279,13 +356,23 @@ class FaceService:
                 and abs(face_center_y - height / 2) <= height * 0.20
             )
 
-            ready = centered
+            # Require a reasonably sized face for useful recognition.
+            face_width_ratio = bbox["width"] / width
+            face_height_ratio = bbox["height"] / height
 
-            guidance = (
-                "មុខនៅទីតាំងត្រឹមត្រូវ។ អាចស្កេនបាន។"
-                if centered
-                else "សូមដាក់មុខនៅកណ្ដាលកាមេរ៉ា។"
+            face_large_enough = (
+                face_width_ratio >= 0.10
+                and face_height_ratio >= 0.10
             )
+
+            ready = centered and face_large_enough
+
+            if ready:
+                guidance = "មុខនៅទីតាំងត្រឹមត្រូវ។ អាចស្កេនបាន។"
+            elif not centered:
+                guidance = "សូមដាក់មុខនៅកណ្ដាលកាមេរ៉ា។"
+            else:
+                guidance = "សូមចូលមកជិតកាមេរ៉ាបន្តិច។"
 
         return FaceAnalysis(
             face_count=face_count,
@@ -300,15 +387,19 @@ class FaceService:
         embedding_a: list[float] | np.ndarray,
         embedding_b: list[float] | np.ndarray,
     ) -> float:
-        vector_a = np.asarray(
-            embedding_a,
-            dtype=np.float32,
-        ).reshape(-1)
+        try:
+            vector_a = np.asarray(
+                embedding_a,
+                dtype=np.float32,
+            ).reshape(-1)
 
-        vector_b = np.asarray(
-            embedding_b,
-            dtype=np.float32,
-        ).reshape(-1)
+            vector_b = np.asarray(
+                embedding_b,
+                dtype=np.float32,
+            ).reshape(-1)
+
+        except (TypeError, ValueError):
+            return 0.0
 
         if vector_a.size == 0 or vector_b.size == 0:
             return 0.0
@@ -325,12 +416,20 @@ class FaceService:
         norm_a = float(np.linalg.norm(vector_a))
         norm_b = float(np.linalg.norm(vector_b))
 
-        if norm_a <= 0 or norm_b <= 0:
+        if (
+            not np.isfinite(norm_a)
+            or not np.isfinite(norm_b)
+            or norm_a <= 0
+            or norm_b <= 0
+        ):
             return 0.0
 
         similarity = float(
             np.dot(vector_a, vector_b) / (norm_a * norm_b)
         )
+
+        if not np.isfinite(similarity):
+            return 0.0
 
         return max(-1.0, min(1.0, similarity))
 
@@ -340,21 +439,43 @@ class FaceService:
         known_faces: list[Any],
     ) -> FaceMatch | None:
         """
-        Accept records as:
-        - (student_id, embedding_data) tuples from SQLAlchemy
-        - dictionaries containing student_id and embedding
+        Return a match only if the best candidate meets the threshold
+        and is sufficiently separated from the second-best student.
+
+        Supported records:
+        - (student_id, embedding_data) tuples/lists
+        - dictionaries with student_id and embedding/encoding_data
         """
+
         if not known_faces:
             return None
 
-        matches: list[tuple[float, int]] = []
+        # Validate the query embedding.
+        try:
+            query = np.asarray(
+                query_embedding,
+                dtype=np.float32,
+            ).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+
+        if (
+            query.size == 0
+            or not np.all(np.isfinite(query))
+            or float(np.linalg.norm(query)) <= 0
+        ):
+            return None
+
+        # Keep only the best score per student.
+        best_by_student: dict[int, float] = {}
 
         for record in known_faces:
             student_id: Any = None
             stored_embedding: Any = None
 
             if isinstance(record, (tuple, list)) and len(record) >= 2:
-                student_id, stored_embedding = record[0], record[1]
+                student_id = record[0]
+                stored_embedding = record[1]
 
             elif isinstance(record, dict):
                 student_id = record.get("student_id")
@@ -370,36 +491,51 @@ class FaceService:
                 student_id = int(student_id)
 
                 if isinstance(stored_embedding, str):
-                    import json
                     stored_embedding = json.loads(stored_embedding)
 
                 similarity = self.cosine_similarity(
-                    query_embedding,
+                    query,
                     stored_embedding,
                 )
-            except (TypeError, ValueError):
+
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+                json.JSONDecodeError,
+            ):
                 continue
 
-            matches.append((similarity, student_id))
+            previous = best_by_student.get(student_id, -1.0)
 
-        if not matches:
+            if similarity > previous:
+                best_by_student[student_id] = similarity
+
+        if not best_by_student:
             return None
 
-        matches.sort(key=lambda item: item[0], reverse=True)
+        ranked = sorted(
+            best_by_student.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
 
-        best_similarity, best_student_id = matches[0]
+        best_student_id, best_similarity = ranked[0]
 
         if best_similarity < self.similarity_threshold:
             return None
 
-        if len(matches) > 1:
-            second_similarity = matches[1][0]
+        if len(ranked) > 1:
+            second_similarity = ranked[1][1]
 
             if (
                 best_similarity - second_similarity
                 < self.ambiguity_margin
             ):
-                return None
+                raise FaceProcessingError(
+                    "Multiple students have similar face scores.",
+                    "ambiguous_match",
+                )
 
         return FaceMatch(
             student_id=best_student_id,
