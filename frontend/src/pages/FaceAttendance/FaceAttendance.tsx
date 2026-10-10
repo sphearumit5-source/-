@@ -55,18 +55,8 @@ export default function FaceAttendance() {
 
   // Auto-start camera on component mount
   useEffect(() => {
-    let mounted = true
-    const initCamera = async () => {
-      try {
-        if (mounted) await start()
-      } catch {
-        // handled in hook
-      }
-    }
-    void initCamera()
-
+    void start()
     return () => {
-      mounted = false
       stop()
     }
   }, [start, stop])

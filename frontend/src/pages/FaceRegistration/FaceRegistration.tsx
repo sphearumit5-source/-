@@ -81,12 +81,10 @@ export default function FaceRegistration() {
 
   // Automatically start camera if a student is already selected
   useEffect(() => {
-    let mounted = true
     if (studentId) {
-      start().catch(() => {})
+      void start()
     }
     return () => {
-      mounted = false
       stop()
     }
   }, [studentId, start, stop])
@@ -98,11 +96,9 @@ export default function FaceRegistration() {
       setError('')
       setMessage('')
       try {
-        const result = await attendanceApi.register(Number(studentId), frame)
+        const result = await attendanceApi.registerFace(Number(studentId), frame)
         playSuccessChime()
-        setMessage(
-          `បានចុះឈ្មោះទិន្នន័យមុខជោគជ័យ! ទំហំ Embeddings: ${result.embeddings_count ?? 1}`
-        )
+        setMessage(result.message || 'បានចុះឈ្មោះទិន្នន័យមុខជោគជ័យ!')
         stop()
       } catch (requestError) {
         setError(
@@ -373,7 +369,7 @@ export default function FaceRegistration() {
             </div>
 
             {loading ? (
-              <Loading text="កំពុងទាញយកបញ្ជីសិស្ស…" />
+              <Loading label="កំពុងទាញយកបញ្ជីសិស្ស…" />
             ) : (
               <div className="space-y-3">
                 <select
@@ -388,7 +384,7 @@ export default function FaceRegistration() {
                   <option value="">-- ជ្រើសរើសសិស្ស --</option>
                   {students.map((student) => (
                     <option key={student.id} value={student.id}>
-                      {student.student_code} - {student.full_name} ({student.class_name || 'គ្មានថ្នាក់'})
+                      {student.student_code} - {student.last_name} {student.first_name} ({student.class_name || 'គ្មានថ្នាក់'})
                     </option>
                   ))}
                 </select>
@@ -396,16 +392,16 @@ export default function FaceRegistration() {
                 {selectedStudent && (
                   <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 p-3.5 text-xs text-indigo-950">
                     <p className="font-bold text-indigo-900 text-sm">
-                      {selectedStudent.full_name}
+                      {selectedStudent.last_name} {selectedStudent.first_name}
                     </p>
                     <p className="text-slate-600 mt-1">
                       អត្តលេខ៖ <span className="font-mono font-bold text-slate-800">{selectedStudent.student_code}</span> | ថ្នាក់៖ <span className="font-bold text-slate-800">{selectedStudent.class_name}</span>
                     </p>
                     <p className="text-[11px] text-slate-500 mt-1">
-                      ស្ថានភាពមុខ៖ {selectedStudent.has_face_encoding ? (
-                        <span className="font-bold text-emerald-600">✓ មានទិន្នន័យមុខរួចហើយ (អាចថតដើម្បី Update បាន)</span>
+                      ស្ថានភាពមុខ៖ {selectedStudent.photo ? (
+                        <span className="font-bold text-emerald-600">✓ មានរូបថតមុខរួចហើយ (អាចថតដើម្បី Update បាន)</span>
                       ) : (
-                        <span className="font-bold text-amber-600">⚠ មិនទាន់មានទិន្នន័យមុខ</span>
+                        <span className="font-bold text-amber-600">⚠ មិនទាន់មានរូបថតមុខ</span>
                       )}
                     </p>
                   </div>
