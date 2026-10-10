@@ -1,12 +1,12 @@
 
+import json
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-
-import json
-import logging
 
 from app.core.config import get_settings
 from app.database.database import engine
@@ -23,21 +23,9 @@ from app.api import (
     users,
 )
 
-# =========================================================
-# LOGGING
-# =========================================================
-
 logger = logging.getLogger(__name__)
 
-# =========================================================
-# SETTINGS
-# =========================================================
-
 settings = get_settings()
-
-# =========================================================
-# FASTAPI APP
-# =========================================================
 
 app = FastAPI(
     title=settings.app_name,
@@ -49,15 +37,15 @@ app = FastAPI(
 # CORS CONFIGURATION
 # =========================================================
 
-origins = [
+DEFAULT_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://frontend-eight-liart-33.vercel.app",
 ]
 
 
-def normalize_origins(value):
-    """ទទួល CORS origins ពី Environment Variables។"""
+def normalize_origins(value) -> list[str]:
+    """Parse CORS origins from a list, JSON string, or CSV string."""
 
     if not value:
         return []
@@ -68,20 +56,14 @@ def normalize_origins(value):
         if not value:
             return []
 
-        # គាំទ្រ JSON list:
-        # ["https://example.vercel.app"]
         if value.startswith("["):
             try:
-                parsed = json.loads(value)
-                if isinstance(parsed, list):
-                    value = parsed
-                else:
-                    return []
+                value = json.loads(value)
             except (ValueError, TypeError):
-                logger.warning("CORS_ORIGINS JSON format is invalid")
+                logger.warning("CORS_ORIGINS contains invalid JSON")
                 return []
+
         else:
-            # គាំទ្រ comma-separated domains
             value = value.split(",")
 
     if not isinstance(value, (list, tuple)):
@@ -92,7 +74,11 @@ def normalize_origins(value):
     for item in value:
         origin = str(item).strip().strip('"').strip("'").rstrip("/")
 
-        if origin:
+        # Remove accidental Markdown link formatting if present.
+        if "](" in origin and origin.startswith("["):
+            origin = origin.split("](", 1)[1].rstrip(")")
+
+        if origin.startswith(("http://", "https://")):
             result.append(origin)
 
     return result
@@ -100,25 +86,25 @@ def normalize_origins(value):
 
 cors_setting = getattr(
     settings,
-    "CORS_ORIGINS",
-    getattr(settings, "cors_origins", None),
+    "cors_origins",
+    getattr(settings, "CORS_ORIGINS", None),
 )
 
-origins.extend(normalize_origins(cors_setting))
-
-# ដក origins ស្ទួន
-origins = list(dict.fromkeys(origins))
+origins = list(
+    dict.fromkeys(
+        DEFAULT_ORIGINS + normalize_origins(cors_setting)
+    )
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-
-    # អនុញ្ញាត localhost និង Vercel deployment domains
     allow_origin_regex=(
-        r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+        r"https?://("
+        r"localhost|127\.0\.0\.1"
+        r")(:\d+)?"
         r"|https://[a-zA-Z0-9-]+\.vercel\.app"
     ),
-
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

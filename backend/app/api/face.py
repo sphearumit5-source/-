@@ -15,7 +15,6 @@ from app.core.dependencies import (
     DatabaseSession,
     require_roles,
 )
-from app.models.attendance import Attendance
 from app.models.face_encoding import FaceEncoding
 from app.models.student import Student
 from app.services.attendance_service import (
@@ -36,7 +35,7 @@ router = APIRouter(
 
 @lru_cache(maxsize=1)
 def get_face_service() -> FaceService:
-    """បង្កើត FaceService មួយ ហើយប្រើឡើងវិញ។"""
+    """Create and reuse one face recognition service."""
     return FaceService()
 
 
@@ -95,7 +94,7 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
         ),
         "models_unavailable": (
             503,
-            "ប្រព័ន្ធ Face Detection មិនទាន់អាចប្រើបាន។ សូមពិនិត្យ Model និង OpenCV។",
+            "ប្រព័ន្ធស្គាល់មុខមិនទាន់អាចប្រើបាន។ សូមពិនិត្យ Model និង OpenCV។",
         ),
         "ambiguous_match": (
             409,
@@ -120,7 +119,7 @@ def _process_error(error: FaceProcessingError) -> HTTPException:
 
 
 async def _run_face_operation(operation_name: str, *args):
-    """ដំណើរការ FaceService ដោយគាំទ្រអាគុយម៉ង់ច្រើន។"""
+    """Run CPU-intensive face operations outside the event loop."""
     try:
         service = get_face_service()
         operation = getattr(service, operation_name, None)
@@ -150,10 +149,7 @@ async def _run_face_operation(operation_name: str, *args):
         )
         raise HTTPException(
             status_code=503,
-            detail=(
-                "ប្រព័ន្ធស្គាល់មុខមិនអាចដំណើរការបាន។ "
-                "សូមពិនិត្យ Vercel Runtime Logs។"
-            ),
+            detail="ប្រព័ន្ធស្គាល់មុខមិនអាចដំណើរការបាន។ សូមពិនិត្យ Backend Logs។",
         ) from error
 
 
@@ -164,6 +160,7 @@ async def register_face(
     student_id: int = Form(gt=0),
     image: UploadFile = File(...),
 ) -> dict[str, object]:
+    """Register a student's face embedding."""
 
     student = database.get(Student, student_id)
 
@@ -181,12 +178,12 @@ async def register_face(
     )
 
     try:
-        database.add(
-            FaceEncoding(
-                student_id=student_id,
-                encoding_data=embedding.tolist(),
-            )
+        encoding = FaceEncoding(
+            student_id=student_id,
+            encoding_data=embedding.tolist(),
         )
+
+        database.add(encoding)
         database.commit()
 
     except Exception as error:
@@ -211,7 +208,7 @@ async def detect_face(
     _: CurrentUser,
     image: UploadFile = File(...),
 ) -> dict[str, object]:
-    """ពិនិត្យមុខសម្រាប់ Auto Scan ដោយមិនកត់ត្រាវត្តមាន។"""
+    """Detect faces and return camera guidance without recording attendance."""
 
     image_data = await _read_image(image)
 
@@ -234,6 +231,7 @@ async def recognize_face(
     _: CurrentUser,
     image: UploadFile = File(...),
 ) -> dict[str, object]:
+    """Recognize a registered student and record attendance."""
 
     image_data = await _read_image(image)
 
@@ -254,21 +252,21 @@ async def recognize_face(
         .where(Student.status == "active")
     ).all()
 
-    known = [
-        (student_id, values)
-        for student_id, values in rows
+    known_faces = [
+        (student_id, encoding_data)
+        for student_id, encoding_data in rows
     ]
 
     match = await _run_face_operation(
         "find_match",
         embedding,
-        known,
+        known_faces,
     )
 
     if match is None:
         raise HTTPException(
             status_code=404,
-            detail="មិនស្គាល់សិស្សនេះទេ។",
+            detail="មិនស្គាល់សិស្សនេះទេ។ សូមចុះឈ្មោះមុខជាមុន។",
         )
 
     similarity = Decimal(
@@ -293,6 +291,17 @@ async def recognize_face(
         raise HTTPException(
             status_code=404,
             detail="រកមិនឃើញសិស្សសកម្មនេះទេ។",
+        ) from error
+
+    except Exception as error:
+        database.rollback()
+        logger.exception(
+            "Failed to record attendance for student_id=%s",
+            match.student_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="មិនអាចរក្សាទុកវត្តមានបានទេ។",
         ) from error
 
     student = database.scalar(

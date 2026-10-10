@@ -1,118 +1,99 @@
 
 from __future__ import annotations
 
-import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from typing import Any
 
+import cv2
 import numpy as np
 
 from app.core.config import get_settings
 
 
-logger = logging.getLogger(__name__)
-
-
 class FaceProcessingError(Exception):
-    def __init__(self, code: str, message: str):
+    """Error raised while processing a face."""
+
+    def __init__(self, message: str, code: str = "processing_error"):
         super().__init__(message)
         self.code = code
 
 
-@dataclass(frozen=True)
-class FaceMatch:
-    student_id: int
-    similarity: float
-
-
-@dataclass(frozen=True)
+@dataclass
 class FaceAnalysis:
     face_count: int
+    faces: list[dict[str, Any]]
     ready: bool
     centered: bool
     guidance: str
 
 
+@dataclass
+class FaceMatch:
+    student_id: int
+    similarity: float
+
+
 class FaceService:
+    """Face detection and recognition using OpenCV YuNet and SFace."""
+
     DETECTOR_FILENAME = "face_detection_yunet_2023mar.onnx"
     RECOGNIZER_FILENAME = "face_recognition_sface_2021dec.onnx"
 
-    def __init__(self, models_directory: Path | None = None):
-        try:
-            import cv2
-        except ImportError as error:
-            logger.exception("OpenCV import failed")
-            raise FaceProcessingError(
-                "models_unavailable",
-                "OpenCV មិនទាន់បានដំឡើងទេ។",
-            ) from error
+    WINDOWS_FALLBACK_DIRECTORY = Path(r"C:\face-model-test")
+    FALLBACK_DETECTOR_FILENAME = "yunet.onnx"
+    FALLBACK_RECOGNIZER_FILENAME = "sface.onnx"
 
-        self.cv2 = cv2
-
+    def __init__(
+        self,
+        models_directory: str | Path | None = None,
+    ) -> None:
         if not hasattr(cv2, "FaceDetectorYN"):
-            logger.error(
-                "OpenCV FaceDetectorYN is unavailable; version=%s",
-                getattr(cv2, "__version__", "unknown"),
-            )
-            raise FaceProcessingError(
-                "models_unavailable",
-                "OpenCV មិនមាន FaceDetectorYN ទេ។",
+            raise RuntimeError(
+                "FaceDetectorYN unavailable. Install compatible OpenCV."
             )
 
         if not hasattr(cv2, "FaceRecognizerSF"):
-            logger.error(
-                "OpenCV FaceRecognizerSF is unavailable; version=%s",
-                getattr(cv2, "__version__", "unknown"),
-            )
-            raise FaceProcessingError(
-                "models_unavailable",
-                "OpenCV មិនមាន FaceRecognizerSF ទេ។",
+            raise RuntimeError(
+                "FaceRecognizerSF unavailable. Install compatible OpenCV."
             )
 
+        settings = get_settings()
         project_root = Path(__file__).resolve().parents[2]
 
         configured_directory = (
             Path(models_directory)
             if models_directory is not None
-            else Path(get_settings().face_models_directory)
+            else Path(settings.face_models_directory)
         )
 
-        if configured_directory.is_absolute():
-            directory = configured_directory
-        else:
-            directory = project_root / configured_directory
-
-        directory = directory.resolve()
+        directory = (
+            configured_directory
+            if configured_directory.is_absolute()
+            else project_root / configured_directory
+        ).resolve()
 
         detector_path = directory / self.DETECTOR_FILENAME
         recognizer_path = directory / self.RECOGNIZER_FILENAME
 
-        logger.info("Face models directory: %s", directory)
-        logger.info(
-            "Face detector model exists: %s",
-            detector_path.is_file(),
-        )
-        logger.info(
-            "Face recognizer model exists: %s",
-            recognizer_path.is_file(),
-        )
+        if os.name == "nt":
+            fallback = self.WINDOWS_FALLBACK_DIRECTORY
+            fallback_detector = fallback / self.FALLBACK_DETECTOR_FILENAME
+            fallback_recognizer = fallback / self.FALLBACK_RECOGNIZER_FILENAME
 
-        missing = [
-            path.name
-            for path in (detector_path, recognizer_path)
-            if not path.is_file()
-        ]
+            if fallback_detector.is_file() and fallback_recognizer.is_file():
+                detector_path = fallback_detector
+                recognizer_path = fallback_recognizer
 
-        if missing:
-            logger.error(
-                "Face model files missing: directory=%s files=%s",
-                directory,
-                ", ".join(missing),
+        if not detector_path.is_file():
+            raise FileNotFoundError(
+                f"YuNet model file not found: {detector_path}"
             )
-            raise FaceProcessingError(
-                "models_unavailable",
-                "មិនមានឯកសារ Face Models៖ " + ", ".join(missing),
+
+        if not recognizer_path.is_file():
+            raise FileNotFoundError(
+                f"SFace model file not found: {recognizer_path}"
             )
 
         try:
@@ -124,322 +105,303 @@ class FaceService:
                 0.3,
                 5000,
             )
-
             self.recognizer = cv2.FaceRecognizerSF.create(
                 str(recognizer_path),
                 "",
             )
+        except cv2.error as exc:
+            raise RuntimeError(
+                f"Could not load face models: {exc}"
+            ) from exc
 
-            if self.detector is None or self.recognizer is None:
-                raise RuntimeError(
-                    "OpenCV returned an empty face model."
-                )
+        self.similarity_threshold = float(
+            getattr(settings, "face_similarity_threshold", 0.363)
+        )
+        self.ambiguity_margin = float(
+            getattr(settings, "face_ambiguity_margin", 0.03)
+        )
 
-        except Exception as error:
-            logger.exception("Failed to initialize YuNet/SFace models")
+    @staticmethod
+    def _decode_image(image_bytes: bytes) -> np.ndarray:
+        if not image_bytes:
             raise FaceProcessingError(
-                "models_unavailable",
-                "មិនអាចបើក Face Models បានទេ។",
-            ) from error
-
-        self._inference_lock = Lock()
-
-        logger.info("FaceService initialized successfully")
-
-    # -----------------------------------------------------
-    # IMAGE DECODING
-    # -----------------------------------------------------
-
-    def _decode_image(self, image_data: bytes) -> np.ndarray:
-        max_bytes = get_settings().max_upload_bytes
-
-        if not image_data or len(image_data) > max_bytes:
-            raise FaceProcessingError(
+                "Image data is empty.",
                 "invalid_image",
-                "រូបភាពទទេ ឬមានទំហំលើសកំណត់។",
             )
 
-        try:
-            buffer = np.frombuffer(image_data, dtype=np.uint8)
-            image = self.cv2.imdecode(
-                buffer,
-                self.cv2.IMREAD_COLOR,
-            )
-        except Exception as error:
-            logger.exception("Image decoding failed")
+        image_array = np.frombuffer(image_bytes, dtype=np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+        if image is None or image.size == 0:
             raise FaceProcessingError(
+                "Invalid image. Upload a valid JPG or PNG.",
                 "invalid_image",
-                "មិនអាចអានរូបភាពនេះបានទេ។",
-            ) from error
-
-        if image is None or image.ndim != 3:
-            raise FaceProcessingError(
-                "invalid_image",
-                "ឯកសារនេះមិនមែនជារូបភាពត្រឹមត្រូវទេ។",
-            )
-
-        height, width = image.shape[:2]
-
-        if width < 160 or height < 160:
-            raise FaceProcessingError(
-                "image_too_small",
-                "រូបភាពតូចពេក។",
             )
 
         return image
 
-    # -----------------------------------------------------
-    # FACE DETECTION
-    # -----------------------------------------------------
+    def _detect_faces(self, image: np.ndarray) -> list[np.ndarray]:
+        if image is None or image.size == 0:
+            raise FaceProcessingError(
+                "Image is empty.",
+                "invalid_image",
+            )
 
-    def _detect_faces(self, image: np.ndarray) -> np.ndarray | None:
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise FaceProcessingError(
+                "Expected a three-channel BGR image.",
+                "invalid_image",
+            )
+
         height, width = image.shape[:2]
+        self.detector.setInputSize((width, height))
 
         try:
-            with self._inference_lock:
-                self.detector.setInputSize((width, height))
-                _, faces = self.detector.detect(image)
-
-            return faces
-
-        except Exception as error:
-            logger.exception("YuNet face detection failed")
+            _, detected_faces = self.detector.detect(image)
+        except cv2.error as exc:
             raise FaceProcessingError(
-                "models_unavailable",
-                "Face Detection Model មានបញ្ហាពេលដំណើរការ។",
-            ) from error
+                f"Face detection failed: {exc}"
+            ) from exc
 
-    # -----------------------------------------------------
-    # EMBEDDING EXTRACTION
-    # -----------------------------------------------------
+        if detected_faces is None:
+            return []
 
-    def extract_embedding(self, image_data: bytes) -> np.ndarray:
-        image = self._decode_image(image_data)
-        faces = self._detect_faces(image)
+        return [
+            np.asarray(face, dtype=np.float32)
+            for face in detected_faces
+        ]
 
-        if faces is None or len(faces) == 0:
+    def extract_embedding(
+        self,
+        image: bytes | np.ndarray,
+        face: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Accept either uploaded image bytes or a BGR image array."""
+        if isinstance(image, bytes):
+            image = self._decode_image(image)
+
+        if not isinstance(image, np.ndarray):
             raise FaceProcessingError(
-                "no_face",
-                "មិនរកឃើញមុខទេ។",
+                "Unsupported image format.",
+                "invalid_image",
             )
 
-        if len(faces) != 1:
-            raise FaceProcessingError(
-                "multiple_faces",
-                "រកឃើញមុខច្រើនជាងមួយ។",
-            )
+        if face is None:
+            detected_faces = self._detect_faces(image)
 
-        face = faces[0]
-        face_width = float(face[2])
-        face_height = float(face[3])
-        score = float(face[14])
-
-        if min(face_width, face_height) < 80 or score < 0.8:
-            raise FaceProcessingError(
-                "low_quality",
-                "មុខមិនច្បាស់គ្រប់គ្រាន់។",
-            )
-
-        try:
-            with self._inference_lock:
-                aligned = self.recognizer.alignCrop(
-                    image,
-                    face.reshape(1, -1),
+            if len(detected_faces) == 0:
+                raise FaceProcessingError(
+                    "No face detected.",
+                    "no_face",
                 )
-                feature = self.recognizer.feature(aligned)
 
-            feature = np.asarray(
-                feature,
-                dtype=np.float32,
-            ).reshape(-1)
+            if len(detected_faces) > 1:
+                raise FaceProcessingError(
+                    "Multiple faces detected.",
+                    "multiple_faces",
+                )
 
-        except Exception as error:
-            logger.exception("SFace embedding extraction failed")
+            face = detected_faces[0]
+
+        try:
+            aligned_face = self.recognizer.alignCrop(image, face)
+            embedding = self.recognizer.feature(aligned_face)
+        except cv2.error as exc:
             raise FaceProcessingError(
-                "models_unavailable",
-                "មិនអាចបង្កើតទិន្នន័យមុខបានទេ។",
-            ) from error
+                f"Face feature extraction failed: {exc}"
+            ) from exc
 
-        norm = float(np.linalg.norm(feature))
-
-        if not np.isfinite(norm) or norm == 0:
+        if embedding is None or embedding.size == 0:
             raise FaceProcessingError(
+                "Could not extract face features.",
                 "low_quality",
-                "ទិន្នន័យមុខមិនត្រឹមត្រូវ។",
             )
 
-        normalized = feature / norm
+        embedding = np.asarray(
+            embedding,
+            dtype=np.float32,
+        ).reshape(-1)
 
-        if not np.all(np.isfinite(normalized)):
+        norm = float(np.linalg.norm(embedding))
+
+        if not np.isfinite(norm) or norm <= 0:
             raise FaceProcessingError(
+                "Invalid face embedding.",
                 "low_quality",
-                "ទិន្នន័យមុខមិនត្រឹមត្រូវ។",
             )
 
-        return normalized.astype(np.float32)
+        return embedding / norm
 
-    # -----------------------------------------------------
-    # CAMERA FRAME ANALYSIS
-    # -----------------------------------------------------
-
-    def analyze(self, image_data: bytes) -> FaceAnalysis:
-        image = self._decode_image(image_data)
-        faces = self._detect_faces(image)
-
-        if faces is None or len(faces) == 0:
-            return FaceAnalysis(
-                face_count=0,
-                ready=False,
-                centered=False,
-                guidance="សូមដាក់មុខនៅមុខកាមេរ៉ា។",
-            )
-
-        if len(faces) != 1:
-            return FaceAnalysis(
-                face_count=int(len(faces)),
-                ready=False,
-                centered=False,
-                guidance="សូមឱ្យមានមុខតែមួយក្នុងស៊ុម។",
-            )
+    def analyze(self, image_bytes: bytes) -> FaceAnalysis:
+        """Detect faces and return status for the frontend scanner."""
+        image = self._decode_image(image_bytes)
+        detected_faces = self._detect_faces(image)
 
         height, width = image.shape[:2]
-        face = faces[0]
+        results: list[dict[str, Any]] = []
 
-        x = float(face[0])
-        y = float(face[1])
-        face_width = float(face[2])
-        face_height = float(face[3])
-        score = float(face[14])
-
-        center_x = x + face_width / 2
-        center_y = y + face_height / 2
-
-        centered = (
-            0.38 * width <= center_x <= 0.62 * width
-            and 0.34 * height <= center_y <= 0.66 * height
-        )
-
-        big_enough = (
-            min(face_width, face_height)
-            >= max(80.0, 0.22 * min(width, height))
-        )
-
-        if min(face_width, face_height) < 80 or score < 0.8:
-            return FaceAnalysis(
-                face_count=1,
-                ready=False,
-                centered=centered,
-                guidance="សូមរក្សាមុខឱ្យនៅស្ងៀម និងមានពន្លឺគ្រប់គ្រាន់។",
+        for face in detected_faces:
+            x, y, box_width, box_height = (
+                int(round(value)) for value in face[:4]
             )
 
-        if not big_enough:
-            return FaceAnalysis(
-                face_count=1,
-                ready=False,
-                centered=centered,
-                guidance="សូមខិតមកជិតកាមេរ៉ាបន្តិចទៀត។",
+            results.append(
+                {
+                    "bbox": {
+                        "x": x,
+                        "y": y,
+                        "width": box_width,
+                        "height": box_height,
+                    },
+                    "confidence": (
+                        float(face[14]) if len(face) > 14 else 0.0
+                    ),
+                }
             )
 
-        if not centered:
-            return FaceAnalysis(
-                face_count=1,
-                ready=False,
-                centered=False,
-                guidance="សូមដាក់មុខនៅកណ្ដាលស៊ុម។",
+        face_count = len(results)
+        centered = False
+        ready = False
+
+        if face_count == 0:
+            guidance = "មិនរកឃើញមុខទេ។ សូមដាក់មុខនៅមុខកាមេរ៉ា។"
+
+        elif face_count > 1:
+            guidance = "រកឃើញមុខច្រើន។ សូមឱ្យមានមនុស្សម្នាក់ប៉ុណ្ណោះ។"
+
+        else:
+            bbox = results[0]["bbox"]
+            face_center_x = bbox["x"] + bbox["width"] / 2
+            face_center_y = bbox["y"] + bbox["height"] / 2
+
+            centered = (
+                abs(face_center_x - width / 2) <= width * 0.20
+                and abs(face_center_y - height / 2) <= height * 0.20
+            )
+
+            ready = centered
+
+            guidance = (
+                "មុខនៅទីតាំងត្រឹមត្រូវ។ អាចស្កេនបាន។"
+                if centered
+                else "សូមដាក់មុខនៅកណ្ដាលកាមេរ៉ា។"
             )
 
         return FaceAnalysis(
-            face_count=1,
-            ready=True,
-            centered=True,
-            guidance="ល្អណាស់! កំពុងចាប់យកមុខ…",
+            face_count=face_count,
+            faces=results,
+            ready=ready,
+            centered=centered,
+            guidance=guidance,
         )
-
-    # -----------------------------------------------------
-    # COSINE SIMILARITY
-    # -----------------------------------------------------
 
     @staticmethod
     def cosine_similarity(
-        first: np.ndarray,
-        second: np.ndarray,
+        embedding_a: list[float] | np.ndarray,
+        embedding_b: list[float] | np.ndarray,
     ) -> float:
-        left = np.asarray(first, dtype=np.float32).reshape(-1)
-        right = np.asarray(second, dtype=np.float32).reshape(-1)
+        vector_a = np.asarray(
+            embedding_a,
+            dtype=np.float32,
+        ).reshape(-1)
 
-        if left.shape != right.shape or left.size == 0:
-            return -1.0
+        vector_b = np.asarray(
+            embedding_b,
+            dtype=np.float32,
+        ).reshape(-1)
 
-        if not np.all(np.isfinite(left)):
-            return -1.0
+        if vector_a.size == 0 or vector_b.size == 0:
+            return 0.0
 
-        if not np.all(np.isfinite(right)):
-            return -1.0
+        if vector_a.shape != vector_b.shape:
+            return 0.0
 
-        denominator = float(
-            np.linalg.norm(left) * np.linalg.norm(right)
+        if not (
+            np.all(np.isfinite(vector_a))
+            and np.all(np.isfinite(vector_b))
+        ):
+            return 0.0
+
+        norm_a = float(np.linalg.norm(vector_a))
+        norm_b = float(np.linalg.norm(vector_b))
+
+        if norm_a <= 0 or norm_b <= 0:
+            return 0.0
+
+        similarity = float(
+            np.dot(vector_a, vector_b) / (norm_a * norm_b)
         )
-
-        if denominator == 0 or not np.isfinite(denominator):
-            return -1.0
-
-        similarity = float(np.dot(left, right) / denominator)
 
         return max(-1.0, min(1.0, similarity))
 
-    # -----------------------------------------------------
-    # MATCH STUDENT
-    # -----------------------------------------------------
-
     def find_match(
         self,
-        embedding: np.ndarray,
-        known_embeddings: list[tuple[int, list[float]]],
+        query_embedding: list[float] | np.ndarray,
+        known_faces: list[Any],
     ) -> FaceMatch | None:
-        settings = get_settings()
+        """
+        Accept records as:
+        - (student_id, embedding_data) tuples from SQLAlchemy
+        - dictionaries containing student_id and embedding
+        """
+        if not known_faces:
+            return None
 
-        threshold = settings.face_similarity_threshold
-        ambiguity_margin = settings.face_ambiguity_margin
+        matches: list[tuple[float, int]] = []
 
-        best_by_student: dict[int, FaceMatch] = {}
+        for record in known_faces:
+            student_id: Any = None
+            stored_embedding: Any = None
 
-        for student_id, stored_embedding in known_embeddings:
-            similarity = self.cosine_similarity(
-                embedding,
-                np.asarray(stored_embedding, dtype=np.float32),
-            )
+            if isinstance(record, (tuple, list)) and len(record) >= 2:
+                student_id, stored_embedding = record[0], record[1]
 
-            current = best_by_student.get(int(student_id))
-
-            if current is None or similarity > current.similarity:
-                best_by_student[int(student_id)] = FaceMatch(
-                    student_id=int(student_id),
-                    similarity=similarity,
+            elif isinstance(record, dict):
+                student_id = record.get("student_id")
+                stored_embedding = record.get(
+                    "embedding",
+                    record.get("encoding_data"),
                 )
 
-        matches = sorted(
-            best_by_student.values(),
-            key=lambda item: item.similarity,
-            reverse=True,
-        )
+            if student_id is None or stored_embedding is None:
+                continue
+
+            try:
+                student_id = int(student_id)
+
+                if isinstance(stored_embedding, str):
+                    import json
+                    stored_embedding = json.loads(stored_embedding)
+
+                similarity = self.cosine_similarity(
+                    query_embedding,
+                    stored_embedding,
+                )
+            except (TypeError, ValueError):
+                continue
+
+            matches.append((similarity, student_id))
 
         if not matches:
             return None
 
-        best = matches[0]
+        matches.sort(key=lambda item: item[0], reverse=True)
 
-        if best.similarity < threshold:
+        best_similarity, best_student_id = matches[0]
+
+        if best_similarity < self.similarity_threshold:
             return None
 
-        if (
-            len(matches) > 1
-            and matches[1].similarity >= threshold
-            and best.similarity - matches[1].similarity
-            < ambiguity_margin
-        ):
-            raise FaceProcessingError(
-                "ambiguous_match",
-                "លទ្ធផលមុខមិនច្បាស់លាស់។",
-            )
+        if len(matches) > 1:
+            second_similarity = matches[1][0]
 
-        return best
+            if (
+                best_similarity - second_similarity
+                < self.ambiguity_margin
+            ):
+                return None
+
+        return FaceMatch(
+            student_id=best_student_id,
+            similarity=best_similarity,
+        )
