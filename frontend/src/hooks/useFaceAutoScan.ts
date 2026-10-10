@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { attendanceApi } from '../services/api'
 
@@ -17,12 +16,12 @@ export function useFaceAutoScan({
   enabled,
   capture,
   onSubmit,
-  intervalMs = 500,
-  requiredFrames = 2,
+  intervalMs = 350,
+  requiredFrames = 1,
   cooldownMs = 3000,
 }: UseFaceAutoScanOptions) {
   const [guidance, setGuidance] = useState(
-    'សូមដាក់មុខនៅកណ្ដាលស៊ុម ហើយរក្សាឱ្យនៅស្ងៀម។',
+    'សូមដាក់ផ្ទៃមុខចំកណ្តាលស៊ុម…'
   )
   const [centered, setCentered] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -40,10 +39,8 @@ export function useFaceAutoScan({
     setProgress(0)
   }, [])
 
-  // Track component mounting safely.
   useEffect(() => {
     mountedRef.current = true
-
     return () => {
       mountedRef.current = false
     }
@@ -53,11 +50,9 @@ export function useFaceAutoScan({
     if (!running) {
       stableRef.current = 0
       lockedUntilRef.current = 0
-
       setProgress(0)
       setCentered(false)
       setLocked(false)
-
       return
     }
 
@@ -66,24 +61,21 @@ export function useFaceAutoScan({
 
     const scheduleNext = (delay: number) => {
       if (cancelled) return
-
       timer = window.setTimeout(() => {
         void scan()
-      }, Math.max(100, delay))
+      }, Math.max(80, delay))
     }
 
     const scan = async (): Promise<void> => {
       if (cancelled || !mountedRef.current) return
 
-      // Never allow two camera/API operations to overlap.
+      // Prevent overlapping camera capture requests
       if (busyRef.current) {
         scheduleNext(intervalMs)
         return
       }
 
-      const remainingCooldown =
-        lockedUntilRef.current - Date.now()
-
+      const remainingCooldown = lockedUntilRef.current - Date.now()
       if (remainingCooldown > 0) {
         scheduleNext(Math.max(intervalMs, remainingCooldown))
         return
@@ -98,11 +90,9 @@ export function useFaceAutoScan({
 
       try {
         const frame = await capture()
-
         if (cancelled || !mountedRef.current) return
 
         const result = await attendanceApi.detectFace(frame)
-
         if (cancelled || !mountedRef.current) return
 
         setGuidance(result.guidance)
@@ -115,23 +105,26 @@ export function useFaceAutoScan({
         }
 
         stableRef.current += 1
+        const neededFrames = Math.max(1, Math.floor(requiredFrames))
 
-        const neededFrames = Math.max(
-          1,
-          Math.floor(requiredFrames),
-        )
-
-        setProgress(
-          Math.min(stableRef.current / neededFrames, 1),
-        )
+        setProgress(Math.min(stableRef.current / neededFrames, 1))
 
         if (stableRef.current < neededFrames) {
           return
         }
 
-        // Lock before submitting so another frame cannot submit.
+        // Lock and trigger submission immediately
         lockedUntilRef.current = Date.now() + cooldownMs
         setLocked(true)
+
+        // Haptic feedback on mobile if supported
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate([60, 40, 60])
+          } catch {
+            // ignore
+          }
+        }
 
         stableRef.current = 0
         setProgress(0)
@@ -139,22 +132,16 @@ export function useFaceAutoScan({
         try {
           await onSubmit(frame)
         } catch {
-          // The page handles and displays the submission error.
+          // Page handles submission error
         }
       } catch {
-        // A temporary camera/API error will be retried.
+        // Temporary capture or network glitch, retry
       } finally {
         busyRef.current = false
 
         if (!cancelled && mountedRef.current) {
-          const remaining =
-            lockedUntilRef.current - Date.now()
-
-          scheduleNext(
-            remaining > 0
-              ? Math.max(intervalMs, remaining)
-              : intervalMs,
-          )
+          const remaining = lockedUntilRef.current - Date.now()
+          scheduleNext(remaining > 0 ? Math.max(intervalMs, remaining) : intervalMs)
         }
       }
     }
@@ -163,22 +150,11 @@ export function useFaceAutoScan({
 
     return () => {
       cancelled = true
-
       if (timer !== undefined) {
         window.clearTimeout(timer)
       }
-
-      // Do not reset busyRef here: an older request may
-      // still be running and must finish before another starts.
     }
-  }, [
-    running,
-    capture,
-    onSubmit,
-    intervalMs,
-    requiredFrames,
-    cooldownMs,
-  ])
+  }, [running, capture, onSubmit, intervalMs, requiredFrames, cooldownMs])
 
   return {
     guidance,

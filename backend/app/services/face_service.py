@@ -115,7 +115,7 @@ class FaceService:
                 str(detector_path),
                 "",
                 (320, 320),
-                0.8,
+                0.65,
                 0.3,
                 5000,
             )
@@ -257,12 +257,24 @@ class FaceService:
                 )
 
             if len(detected_faces) > 1:
-                raise FaceProcessingError(
-                    "Multiple faces detected.",
-                    "multiple_faces",
+                # Sort faces by bounding box area descending
+                detected_faces.sort(
+                    key=lambda f: float(f[2]) * float(f[3]),
+                    reverse=True,
                 )
+                largest_area = float(detected_faces[0][2]) * float(detected_faces[0][3])
+                second_area = float(detected_faces[1][2]) * float(detected_faces[1][3])
 
-            face = detected_faces[0]
+                # If primary face is prominent in foreground (at least 1.5x larger than the background face)
+                if second_area < largest_area * 0.65:
+                    face = detected_faces[0]
+                else:
+                    raise FaceProcessingError(
+                        "Multiple faces detected.",
+                        "multiple_faces",
+                    )
+            else:
+                face = detected_faces[0]
 
         try:
             with self._model_lock:
@@ -335,42 +347,49 @@ class FaceService:
         ready = False
 
         if face_count == 0:
-            guidance = (
-                "មិនរកឃើញមុខទេ។ "
-                "សូមដាក់មុខនៅមុខកាមេរ៉ា។"
-            )
+            guidance = "មិនទាន់រកឃើញមុខទេ។ សូមដាក់មុខចំកាមេរ៉ា។"
 
         elif face_count > 1:
-            guidance = (
-                "រកឃើញមុខច្រើន។ "
-                "សូមឱ្យមានមនុស្សម្នាក់ប៉ុណ្ណោះ។"
+            # Sort by area descending
+            results.sort(
+                key=lambda r: r["bbox"]["width"] * r["bbox"]["height"],
+                reverse=True,
             )
+            largest_area = results[0]["bbox"]["width"] * results[0]["bbox"]["height"]
+            second_area = results[1]["bbox"]["width"] * results[1]["bbox"]["height"]
 
-        else:
+            if second_area < largest_area * 0.65:
+                # Primary foreground face is clear!
+                results = [results[0]]
+                face_count = 1
+            else:
+                guidance = "រកឃើញមនុស្សច្រើន។ សូមឱ្យមានមនុស្សតែម្នាក់ក្នុងស៊ុម។"
+
+        if face_count == 1:
             bbox = results[0]["bbox"]
             face_center_x = bbox["x"] + bbox["width"] / 2
             face_center_y = bbox["y"] + bbox["height"] / 2
 
+            # Smooth tolerance of 24% for handheld smartphones
             centered = (
-                abs(face_center_x - width / 2) <= width * 0.20
-                and abs(face_center_y - height / 2) <= height * 0.20
+                abs(face_center_x - width / 2) <= width * 0.24
+                and abs(face_center_y - height / 2) <= height * 0.24
             )
 
-            # Require a reasonably sized face for useful recognition.
             face_width_ratio = bbox["width"] / width
             face_height_ratio = bbox["height"] / height
 
             face_large_enough = (
-                face_width_ratio >= 0.10
-                and face_height_ratio >= 0.10
+                face_width_ratio >= 0.08
+                and face_height_ratio >= 0.08
             )
 
             ready = centered and face_large_enough
 
             if ready:
-                guidance = "មុខនៅទីតាំងត្រឹមត្រូវ។ អាចស្កេនបាន។"
+                guidance = "មុខនៅចំកណ្តាលត្រឹមត្រូវ ✓"
             elif not centered:
-                guidance = "សូមដាក់មុខនៅកណ្ដាលកាមេរ៉ា។"
+                guidance = "សូមរំកិលមុខមកកណ្ដាលស៊ុម។"
             else:
                 guidance = "សូមចូលមកជិតកាមេរ៉ាបន្តិច។"
 
