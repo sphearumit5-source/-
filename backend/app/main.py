@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+# =========================================================
+# FASTAPI APPLICATION
+# =========================================================
+
 app = FastAPI(
     title=settings.app_name,
     description="សេវា API សម្រាប់គ្រប់គ្រងសិស្ស និងវត្តមានតាមការស្គាល់មុខ",
@@ -38,9 +42,9 @@ app = FastAPI(
 # =========================================================
 
 DEFAULT_ORIGINS = [
+    "https://frontend-eight-liart-33.vercel.app",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://frontend-eight-liart-33.vercel.app",
 ]
 
 
@@ -60,13 +64,16 @@ def normalize_origins(value) -> list[str]:
             try:
                 value = json.loads(value)
             except (ValueError, TypeError):
-                logger.warning("CORS_ORIGINS contains invalid JSON")
+                logger.warning(
+                    "CORS_ORIGINS is invalid JSON; using default origins"
+                )
                 return []
 
         else:
             value = value.split(",")
 
     if not isinstance(value, (list, tuple)):
+        logger.warning("CORS_ORIGINS must be a list or string")
         return []
 
     result = []
@@ -74,21 +81,16 @@ def normalize_origins(value) -> list[str]:
     for item in value:
         origin = str(item).strip().strip('"').strip("'").rstrip("/")
 
-        # Remove accidental Markdown link formatting if present.
-        if "](" in origin and origin.startswith("["):
-            origin = origin.split("](", 1)[1].rstrip(")")
-
         if origin.startswith(("http://", "https://")):
             result.append(origin)
+        else:
+            logger.warning("Ignoring invalid CORS origin: %s", origin)
 
     return result
 
 
-cors_setting = getattr(
-    settings,
-    "cors_origins",
-    getattr(settings, "CORS_ORIGINS", None),
-)
+# Pydantic Settings normally exposes this as settings.cors_origins.
+cors_setting = getattr(settings, "cors_origins", None)
 
 origins = list(
     dict.fromkeys(
@@ -96,15 +98,11 @@ origins = list(
     )
 )
 
+logger.info("Configured CORS origins: %s", origins)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=(
-        r"https?://("
-        r"localhost|127\.0\.0\.1"
-        r")(:\d+)?"
-        r"|https://[a-zA-Z0-9-]+\.vercel\.app"
-    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -113,6 +111,7 @@ app.add_middleware(
 # =========================================================
 # ROOT ROUTE
 # =========================================================
+
 
 @app.get("/", tags=["Root"])
 def read_root():
@@ -147,6 +146,7 @@ for api_router in (
 # HEALTH CHECK
 # =========================================================
 
+
 @app.get("/health", tags=["System Health"])
 def health_check():
     return {
@@ -158,6 +158,7 @@ def health_check():
 # =========================================================
 # READINESS CHECK
 # =========================================================
+
 
 @app.get("/ready", tags=["System Readiness"])
 def readiness_check():
