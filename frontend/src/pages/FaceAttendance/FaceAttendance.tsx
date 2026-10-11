@@ -12,6 +12,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { speakSuccess } from '../../utils/audio'
 import { Button } from '../../components/ui/Button'
 import { Card, PageHeading } from '../../components/ui/Card'
 import { ErrorMessage, StatusBadge } from '../../components/ui/Loading'
@@ -69,6 +70,8 @@ export default function FaceAttendance() {
       const recognition = await attendanceApi.recognize(frame)
       setResult(recognition)
       playSuccessChime()
+      // Speak confirmation in Khmer
+      speakSuccess('បានកត់វត្តមានជោគជ័យ')
     } catch (requestError) {
       setError(
         requestError instanceof Error && !('response' in requestError)

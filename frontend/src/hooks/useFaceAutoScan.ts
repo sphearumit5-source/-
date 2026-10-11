@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { attendanceApi } from '../services/api'
+import { speakSuccess } from '../utils/audio'
 
 interface UseFaceAutoScanOptions {
   active: boolean
@@ -112,6 +113,11 @@ export function useFaceAutoScan({
         if (stableRef.current < neededFrames) {
           return
         }
+
+        // Indicate that a ready face has been detected
+        // Play a short sound and speak a confirmation
+        // (playSuccessChime is already handled after onSubmit)
+        speakSuccess('ស្គាល់មុខបាន')
 
         // Lock and trigger submission immediately
         lockedUntilRef.current = Date.now() + cooldownMs

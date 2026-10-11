@@ -12,6 +12,7 @@ import {
   Video,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
+import { speakSuccess } from '../../utils/audio'
 import { useSearchParams } from 'react-router-dom'
 import { Button } from '../../components/ui/Button'
 import { Card, PageHeading } from '../../components/ui/Card'
@@ -98,6 +99,8 @@ export default function FaceRegistration() {
       try {
         const result = await attendanceApi.registerFace(Number(studentId), frame)
         playSuccessChime()
+        // Speak a confirmation in Khmer after successful registration
+        speakSuccess('បានចុះឈ្មោះមុខជោគជ័យ')
         setMessage(result.message || 'បានចុះឈ្មោះទិន្នន័យមុខជោគជ័យ!')
         stop()
       } catch (requestError) {
