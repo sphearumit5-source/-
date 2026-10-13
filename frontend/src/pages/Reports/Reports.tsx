@@ -1,6 +1,7 @@
 import {
   Calendar,
   CalendarDays,
+  CalendarRange,
   FileSpreadsheet,
   FileText,
   GraduationCap,
@@ -12,26 +13,57 @@ import { Button } from '../../components/ui/Button'
 import { Card, PageHeading } from '../../components/ui/Card'
 import { ErrorMessage, Loading, StatusBadge } from '../../components/ui/Loading'
 import { classesApi, getApiError, reportsApi, studentsApi } from '../../services/api'
-import type { Classroom, ReportRow, Student } from '../../types'
+import type {
+  Classroom,
+  RangeSummary,
+  ReportRow,
+  ReportSummary,
+  Student,
+  StudentSummaryRow,
+} from '../../types'
 
-type ReportKind = 'daily' | 'monthly' | 'student' | 'class'
-type Totals = {
-  total_students: number
-  present: number
-  absent: number
-  late: number
-  attendance_rate: number
+type ReportKind = 'daily' | 'weekly' | 'monthly' | 'student' | 'class'
+type Totals = Omit<ReportSummary, 'records'>
+type ReportData = Totals & {
+  records: ReportRow[]
+  students: StudentSummaryRow[]
+  pass_attendance_times: number | null
 }
-type ReportData = Totals & { records: ReportRow[] }
 
 const dateAtLocalTime = new Date()
-const today = `${dateAtLocalTime.getFullYear()}-${String(dateAtLocalTime.getMonth() + 1).padStart(2, '0')}-${String(dateAtLocalTime.getDate()).padStart(2, '0')}`
+const today = toIsoDate(dateAtLocalTime)
 const REPORT_KINDS: Array<{ value: ReportKind; label: string; icon: typeof Calendar }> = [
   { value: 'daily', label: 'ប្រចាំថ្ងៃ', icon: Calendar },
+  { value: 'weekly', label: 'ប្រចាំសប្ដាហ៍', icon: CalendarRange },
   { value: 'monthly', label: 'ប្រចាំខែ', icon: CalendarDays },
   { value: 'student', label: 'តាមសិស្ស', icon: User },
   { value: 'class', label: 'តាមថ្នាក់រៀន', icon: GraduationCap },
 ]
+
+function toIsoDate(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(
+    value.getDate()
+  ).padStart(2, '0')}`
+}
+
+function weekRange(day: string) {
+  const parsed = new Date(`${day}T12:00:00`)
+  const start = new Date(parsed)
+  start.setDate(parsed.getDate() - ((parsed.getDay() + 6) % 7))
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
+  return { start: toIsoDate(start), end: toIsoDate(end) }
+}
+
+function monthRange(month: string) {
+  const parsed = new Date(`${month}T12:00:00`)
+  const year = parsed.getFullYear()
+  const monthIndex = parsed.getMonth()
+  return {
+    start: `${year}-${String(monthIndex + 1).padStart(2, '0')}-01`,
+    end: toIsoDate(new Date(year, monthIndex + 1, 0)),
+  }
+}
 
 export default function Reports() {
   const [kind, setKind] = useState<ReportKind>('daily')
@@ -46,6 +78,9 @@ export default function Reports() {
   const [loading, setLoading] = useState(true)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState('')
+
+  const isSummaryReport = kind === 'weekly' || kind === 'monthly'
+  const usesSingleDate = kind === 'daily' || isSummaryReport
 
   useEffect(() => {
     Promise.all([
@@ -69,32 +104,22 @@ export default function Reports() {
           date,
           classId ? Number(classId) : undefined
         )
-        return result
+        return { ...result, students: [], pass_attendance_times: null }
       }
-      if (kind === 'monthly') {
-        const parsed = new Date(`${date}T12:00:00`)
-        const result = await reportsApi.monthly(
-          parsed.getFullYear(),
-          parsed.getMonth() + 1,
-          classId ? Number(classId) : undefined
-        )
-        const totalSchoolDays = result.daily.reduce(
-          (sum, point) => sum + point.total_students,
-          0
-        )
-        const present = result.daily.reduce((sum, point) => sum + point.present, 0)
-        const absent = result.daily.reduce((sum, point) => sum + point.absent, 0)
-        const late = result.daily.reduce((sum, point) => sum + point.late, 0)
-        return {
-          total_students: result.daily.at(-1)?.total_students ?? 0,
-          present,
-          absent,
-          late,
-          attendance_rate: totalSchoolDays
-            ? Math.round(((present + late) / totalSchoolDays) * 10000) / 100
-            : 0,
-          records: result.records,
-        }
+      if (kind === 'weekly' || kind === 'monthly') {
+        const selectedClass = classId ? Number(classId) : undefined
+        const result =
+          kind === 'monthly'
+            ? (() => {
+                const parsed = new Date(`${date}T12:00:00`)
+                return reportsApi.monthly(
+                  parsed.getFullYear(),
+                  parsed.getMonth() + 1,
+                  selectedClass
+                )
+              })()
+            : reportsApi.weekly(date, selectedClass)
+        return summarizeRange(await result)
       }
       if (kind === 'student') {
         if (!studentId) return null
@@ -137,6 +162,27 @@ export default function Reports() {
         ? Math.round(((present + late) / records.length) * 10000) / 100
         : 0,
       records,
+      students: [],
+      pass_attendance_times: null,
+    }
+  }
+
+  function summarizeRange(result: RangeSummary): ReportData {
+    const schoolDays = result.daily.reduce((sum, point) => sum + point.total_students, 0)
+    const present = result.daily.reduce((sum, point) => sum + point.present, 0)
+    const absent = result.daily.reduce((sum, point) => sum + point.absent, 0)
+    const late = result.daily.reduce((sum, point) => sum + point.late, 0)
+    return {
+      total_students: result.students.length,
+      present,
+      absent,
+      late,
+      attendance_rate: schoolDays
+        ? Math.round(((present + late) / schoolDays) * 10000) / 100
+        : 0,
+      records: [],
+      students: result.students,
+      pass_attendance_times: result.pass_attendance_times,
     }
   }
 
@@ -147,18 +193,10 @@ export default function Reports() {
       const range =
         kind === 'daily'
           ? { start: date, end: date }
+          : kind === 'weekly'
+          ? weekRange(date)
           : kind === 'monthly'
-          ? (() => {
-              const parsed = new Date(`${date}T12:00:00`)
-              const year = parsed.getFullYear()
-              const month = parsed.getMonth()
-              return {
-                start: `${year}-${String(month + 1).padStart(2, '0')}-01`,
-                end: `${year}-${String(month + 1).padStart(2, '0')}-${String(
-                  new Date(year, month + 1, 0).getDate()
-                ).padStart(2, '0')}`,
-              }
-            })()
+          ? monthRange(date)
           : { start: startDate, end: endDate }
 
       const file = await reportsApi.export(
@@ -215,12 +253,18 @@ export default function Reports() {
         {/* Dynamic Filters Form */}
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-wrap items-end gap-3.5">
-            {(kind === 'daily' || kind === 'monthly') && (
+            {usesSingleDate && (
               <label className="space-y-1 text-xs font-bold text-slate-700">
-                <span>{kind === 'daily' ? 'កាលបរិច្ឆេទ' : 'ខែរាយការណ៍'}</span>
+                <span>
+                  {kind === 'daily'
+                    ? 'កាលបរិច្ឆេទ'
+                    : kind === 'weekly'
+                    ? 'ថ្ងៃក្នុងសប្ដាហ៍'
+                    : 'ខែរាយការណ៍'}
+                </span>
                 <input
-                  type={kind === 'daily' ? 'date' : 'month'}
-                  value={kind === 'daily' ? date : date.slice(0, 7)}
+                  type={kind === 'monthly' ? 'month' : 'date'}
+                  value={kind === 'monthly' ? date.slice(0, 7) : date}
                   onChange={(event) =>
                     setDate(
                       kind === 'monthly'
@@ -289,7 +333,7 @@ export default function Reports() {
               </>
             )}
 
-            {(kind === 'daily' || kind === 'monthly') && (
+            {usesSingleDate && (
               <label className="space-y-1 text-xs font-bold text-slate-700">
                 <span>ថ្នាក់រៀន</span>
                 <select
@@ -337,10 +381,14 @@ export default function Reports() {
         report && (
           <div className="space-y-6">
             {/* KPI Metric Tiles */}
-            <div className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <div
+              className={`stagger grid gap-4 sm:grid-cols-2 ${
+                isSummaryReport ? 'xl:grid-cols-6' : 'xl:grid-cols-5'
+              }`}
+            >
               {[
                 {
-                  label: kind === 'monthly' ? 'សិស្សសរុប (ថ្ងៃចុងក្រោយ)' : 'សិស្សសរុប',
+                  label: 'សិស្សសរុប',
                   value: report.total_students,
                   color: 'text-indigo-700',
                   bg: 'bg-indigo-50/70 border-indigo-100',
@@ -369,6 +417,16 @@ export default function Reports() {
                   color: 'text-blue-700',
                   bg: 'bg-blue-50/70 border-blue-100',
                 },
+                ...(isSummaryReport
+                  ? [
+                      {
+                        label: 'សិស្សជាប់លក្ខខណ្ឌ',
+                        value: report.students.filter((row) => row.passes).length,
+                        color: 'text-teal-700',
+                        bg: 'bg-teal-50/70 border-teal-100',
+                      },
+                    ]
+                  : []),
               ].map(({ label, value, color, bg }) => (
                 <Card key={label} className={`p-5 border ${bg}`}>
                   <p className="text-xs font-semibold text-slate-500">{label}</p>
@@ -381,83 +439,187 @@ export default function Reports() {
               ))}
             </div>
 
-            {/* Attendance Table */}
-            <Card className="p-5 sm:p-6">
-              <h2 className="mb-4 font-bold text-slate-900 text-base">
-                បញ្ជីកំណត់ត្រាវត្តមានលម្អិត
-              </h2>
-              <div className="overflow-x-auto rounded-xl border border-slate-100">
-                <table className="w-full min-w-[760px] text-left text-sm">
-                  <thead className="border-b border-slate-200/80 bg-slate-50/75 text-xs font-semibold text-slate-500">
-                    <tr>
-                      {[
-                        'អត្តលេខ',
-                        'ឈ្មោះសិស្ស',
-                        'ថ្នាក់រៀន',
-                        'កាលបរិច្ឆេទ',
-                        'ម៉ោងចូល',
-                        'ស្ថានភាព',
-                        'ភាពស្រដៀងមុខ AI',
-                      ].map((item) => (
-                        <th key={item} className="px-4 py-3.5 font-semibold">
-                          {item}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {report.records.map((record) => (
-                      <tr
-                        key={`${record.attendance_date}-${record.id}`}
-                        className="transition-colors hover:bg-slate-50/70"
-                      >
-                        <td className="px-4 py-3.5 font-mono text-xs font-semibold text-slate-600">
-                          {record.student_code}
-                        </td>
-                        <td className="px-4 py-3.5 font-bold text-slate-900">
-                          {record.student_name}
-                        </td>
-                        <td className="px-4 py-3.5 font-medium text-slate-600">
-                          <span className="rounded-lg bg-indigo-50/60 px-2 py-0.5 text-xs font-semibold text-indigo-700">
-                            {record.class_name}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 font-mono text-xs text-slate-600">
-                          {record.attendance_date}
-                        </td>
-                        <td className="px-4 py-3.5 font-mono text-xs font-bold text-slate-700">
-                          {record.check_in_time ?? '—'}
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <StatusBadge
-                            status={record.status}
-                            label={
-                              record.status === 'present'
-                                ? 'មានវត្តមាន'
-                                : record.status === 'late'
-                                ? 'មកយឺត'
-                                : 'អវត្តមាន'
-                            }
-                          />
-                        </td>
-                        <td className="px-4 py-3.5 font-mono text-xs font-bold text-slate-600">
-                          {record.confidence == null ? '—' : `${record.confidence}%`}
-                        </td>
+            {/* One row per student: attendance counted across the range */}
+            {isSummaryReport ? (
+              <Card className="p-5 sm:p-6">
+                <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+                  <h2 className="font-bold text-slate-900 text-base">
+                    សង្ខេបវត្តមានតាមសិស្ស ({report.students.length} សិស្ស)
+                  </h2>
+                  <p className="text-xs font-semibold text-slate-500">
+                    លក្ខខណ្ឌជាប់៖ មានវត្តមានយ៉ាងតិច{' '}
+                    <span className="font-mono text-indigo-700">
+                      {report.pass_attendance_times}
+                    </span>{' '}
+                    ដង
+                  </p>
+                </div>
+                <div className="overflow-x-auto rounded-xl border border-slate-100">
+                  <table className="w-full min-w-[1020px] text-left text-sm">
+                    <thead className="border-b border-slate-200/80 bg-slate-50/75 text-xs font-semibold text-slate-500">
+                      <tr>
+                        {[
+                          'អត្តលេខ',
+                          'ឈ្មោះសិស្ស',
+                          'ថ្នាក់រៀន',
+                          'ចំនួនវត្តមាន (ដង)',
+                          'ថ្ងៃមានវត្តមាន',
+                          'ថ្ងៃមកយឺត',
+                          'ថ្ងៃអវត្តមាន',
+                          'ថ្ងៃសរុប',
+                          'អត្រាវត្តមាន',
+                          'លទ្ធផល',
+                        ].map((item) => (
+                          <th key={item} className="px-4 py-3.5 font-semibold">
+                            {item}
+                          </th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {report.students.map((row) => (
+                        <tr
+                          key={row.student_id}
+                          className="transition-colors hover:bg-slate-50/70"
+                        >
+                          <td className="px-4 py-3.5 font-mono text-xs font-semibold text-slate-600">
+                            {row.student_code}
+                          </td>
+                          <td className="px-4 py-3.5 font-bold text-slate-900">
+                            {row.student_name}
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <span className="rounded-lg bg-indigo-50/60 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                              {row.class_name}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-sm font-extrabold text-indigo-700">
+                            {row.attendance_days}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-emerald-700">
+                            {row.present_days}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-amber-700">
+                            {row.late_days}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-rose-700">
+                            {row.absent_days}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs text-slate-600">
+                            {row.total_days}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-semibold text-slate-700">
+                            {row.attendance_rate}%
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <span
+                              className={`inline-flex rounded-lg px-2.5 py-1 text-xs font-bold ${
+                                row.passes
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-rose-50 text-rose-700'
+                              }`}
+                            >
+                              {row.passes ? 'ជាប់' : 'មិនជាប់'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
 
-                {report.records.length === 0 && (
-                  <div className="py-14 text-center">
-                    <Users size={36} className="mx-auto text-slate-300 mb-2" />
-                    <p className="text-sm font-medium text-slate-500">
-                      មិនមានកំណត់ត្រាវត្តមានក្នុងលក្ខខណ្ឌនេះទេ។
-                    </p>
-                  </div>
-                )}
-              </div>
-            </Card>
+                  {report.students.length === 0 && (
+                    <div className="py-14 text-center">
+                      <Users size={36} className="mx-auto text-slate-300 mb-2" />
+                      <p className="text-sm font-medium text-slate-500">
+                        មិនមានសិស្សក្នុងលក្ខខណ្ឌនេះទេ។
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            ) : (
+              /* Attendance Table */
+              <Card className="p-5 sm:p-6">
+                <h2 className="mb-4 font-bold text-slate-900 text-base">
+                  បញ្ជីកំណត់ត្រាវត្តមានលម្អិត
+                </h2>
+                <div className="overflow-x-auto rounded-xl border border-slate-100">
+                  <table className="w-full min-w-[860px] text-left text-sm">
+                    <thead className="border-b border-slate-200/80 bg-slate-50/75 text-xs font-semibold text-slate-500">
+                      <tr>
+                        {[
+                          'អត្តលេខ',
+                          'ឈ្មោះសិស្ស',
+                          'ថ្នាក់រៀន',
+                          'កាលបរិច្ឆេទ',
+                          'ម៉ោងចូល',
+                          'ស្ថានភាព',
+                          'ភាពស្រដៀងមុខ AI',
+                          'ចំនួនវត្តមាន',
+                        ].map((item) => (
+                          <th key={item} className="px-4 py-3.5 font-semibold">
+                            {item}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {report.records.map((record) => (
+                        <tr
+                          key={`${record.attendance_date}-${record.id}`}
+                          className="transition-colors hover:bg-slate-50/70"
+                        >
+                          <td className="px-4 py-3.5 font-mono text-xs font-semibold text-slate-600">
+                            {record.student_code}
+                          </td>
+                          <td className="px-4 py-3.5 font-bold text-slate-900">
+                            {record.student_name}
+                          </td>
+                          <td className="px-4 py-3.5 font-medium text-slate-600">
+                            <span className="rounded-lg bg-indigo-50/60 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                              {record.class_name}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs text-slate-600">
+                            {record.attendance_date}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-slate-700">
+                            {record.check_in_time ?? '—'}
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <StatusBadge
+                              status={record.status}
+                              label={
+                                record.status === 'present'
+                                  ? 'មានវត្តមាន'
+                                  : record.status === 'late'
+                                  ? 'មកយឺត'
+                                  : 'អវត្តមាន'
+                              }
+                            />
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-slate-600">
+                            {record.confidence == null ? '—' : `${record.confidence}%`}
+                          </td>
+                          <td className="px-4 py-3.5 font-mono text-xs font-bold text-indigo-700">
+                            {record.attendance_days}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+
+                  {report.records.length === 0 && (
+                    <div className="py-14 text-center">
+                      <Users size={36} className="mx-auto text-slate-300 mb-2" />
+                      <p className="text-sm font-medium text-slate-500">
+                        មិនមានកំណត់ត្រាវត្តមានក្នុងលក្ខខណ្ឌនេះទេ។
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
           </div>
         )
       )}

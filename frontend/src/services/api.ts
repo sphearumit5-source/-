@@ -7,6 +7,7 @@ import type {
   DashboardChart,
   DashboardStats,
   RecentAttendance,
+  RangeSummary,
   ReportSummary,
   ReportRow,
   SchoolSettings,
@@ -162,7 +163,11 @@ export const reportsApi = {
     return data
   },
   async monthly(year: number, month: number, class_id?: number) {
-    const { data } = await api.get<{ year: number; month: number; records: ReportRow[]; daily: Array<{ date: string } & Omit<ReportSummary, 'records'>> }>('/api/reports/monthly', { params: { year, month, class_id } })
+    const { data } = await api.get<RangeSummary>('/api/reports/monthly', { params: { year, month, class_id } })
+    return data
+  },
+  async weekly(date: string, class_id?: number) {
+    const { data } = await api.get<RangeSummary>('/api/reports/weekly', { params: { date, class_id } })
     return data
   },
   async student(student_id: number, start_date: string, end_date: string) {

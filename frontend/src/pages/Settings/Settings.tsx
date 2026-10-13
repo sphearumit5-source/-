@@ -24,6 +24,8 @@ const defaults: SchoolSettings = {
   school_start_time: '07:00',
   late_after_time: '08:00',
   school_days_per_week: 6,
+  pass_attendance_times_monthly: 20,
+  pass_attendance_times_weekly: 5,
 }
 
 export default function Settings() {
@@ -261,6 +263,59 @@ export default function Settings() {
                     setValues({
                       ...values,
                       school_days_per_week: Number(event.target.value),
+                    })
+                  }
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm font-bold text-slate-800 transition focus:border-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-500/10"
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Pass Requirement Settings */}
+          <div>
+            <div className="mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
+              <ShieldCheck size={20} className="text-indigo-600" />
+              <div>
+                <h2 className="font-bold text-slate-900 text-base">
+                  លក្ខខណ្ឌជាប់វត្តមាន
+                </h2>
+                <p className="text-xs text-slate-500">
+                  កំណត់ចំនួនដងមានវត្តមានអប្បបរមាសម្រាប់របាយការណ៍ប្រចាំខែ និងប្រចាំសប្ដាហ៍
+                </p>
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="space-y-1.5 text-sm font-medium text-slate-700">
+                <span>ចំនួនវត្តមានអប្បបរមាប្រចាំខែ (ដង)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={62}
+                  required
+                  value={values.pass_attendance_times_monthly}
+                  onChange={(event) =>
+                    setValues({
+                      ...values,
+                      pass_attendance_times_monthly: Number(event.target.value),
+                    })
+                  }
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm font-bold text-slate-800 transition focus:border-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-500/10"
+                />
+              </label>
+
+              <label className="space-y-1.5 text-sm font-medium text-slate-700">
+                <span>ចំនួនវត្តមានអប្បបរមាប្រចាំសប្ដាហ៍ (ដង)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={14}
+                  required
+                  value={values.pass_attendance_times_weekly}
+                  onChange={(event) =>
+                    setValues({
+                      ...values,
+                      pass_attendance_times_weekly: Number(event.target.value),
                     })
                   }
                   className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm font-bold text-slate-800 transition focus:border-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-500/10"

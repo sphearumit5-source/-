@@ -10,7 +10,7 @@ from app.models.attendance import Attendance
 from app.models.student import Student
 from app.schemas.attendance import AttendanceStatus
 from app.schemas.dashboard import AttendanceChartPoint, DashboardChart, DashboardStats, RecentAttendance
-from app.services.report_service import daily_summary
+from app.services.report_service import daily_summary, summary_by_date
 
 router = APIRouter(prefix="/api/dashboard", tags=["ផ្ទាំងគ្រប់គ្រង"])
 
@@ -65,16 +65,13 @@ def attendance_chart(
     today = date.today()
     day_count = 7 if period == "week" else 30
     first_day = today - timedelta(days=day_count - 1)
-    points = []
-    for offset in range(day_count):
-        current_day = first_day + timedelta(days=offset)
-        totals = daily_summary(database, current_day)
-        points.append(
-            AttendanceChartPoint(
-                label=current_day.strftime("%d/%m"),
-                present=int(totals["present"]),
-                absent=int(totals["absent"]),
-                late=int(totals["late"]),
-            )
+    points = [
+        AttendanceChartPoint(
+            label=current_day.strftime("%d/%m"),
+            present=int(totals["present"]),
+            absent=int(totals["absent"]),
+            late=int(totals["late"]),
         )
+        for current_day, totals in summary_by_date(database, first_day, today).items()
+    ]
     return DashboardChart(period=period, points=points, generated_for=today)

@@ -125,6 +125,8 @@ export interface SchoolSettings {
   school_start_time: string
   late_after_time: string
   school_days_per_week: number
+  pass_attendance_times_monthly: number
+  pass_attendance_times_weekly: number
 }
 
 export interface ReportSummary {
@@ -134,6 +136,28 @@ export interface ReportSummary {
   late: number
   attendance_rate: number
   records: ReportRow[]
+}
+
+export interface StudentSummaryRow {
+  student_id: number
+  student_code: string
+  student_name: string
+  class_name: string
+  present_days: number
+  late_days: number
+  absent_days: number
+  attendance_days: number
+  total_days: number
+  attendance_rate: number
+  passes: boolean
+}
+
+export interface RangeSummary {
+  start_date: string
+  end_date: string
+  pass_attendance_times: number
+  students: StudentSummaryRow[]
+  daily: Array<{ date: string } & Omit<ReportSummary, 'records'>>
 }
 
 export interface ReportRow {
@@ -147,4 +171,5 @@ export interface ReportRow {
   check_out_time: string | null
   status: AttendanceStatus
   confidence: number | null
+  attendance_days: number
 }

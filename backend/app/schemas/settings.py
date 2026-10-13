@@ -9,3 +9,5 @@ class SchoolSettings(BaseModel):
     school_start_time: time = time(7, 0)
     late_after_time: time = time(8, 0)
     school_days_per_week: int = Field(default=6, ge=1, le=7)
+    pass_attendance_times_monthly: int = Field(default=20, ge=1, le=62)
+    pass_attendance_times_weekly: int = Field(default=5, ge=1, le=14)
